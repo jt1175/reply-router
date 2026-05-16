@@ -127,3 +127,78 @@ def test_add_to_dnc(client):
         status=200,
     )
     client.add_to_dnc(contact_id="ct_1")
+
+
+@responses.activate
+def test_resolve_contact_zero_matches_creates_skeleton(client):
+    # First search returns nothing
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": []},
+        status=200,
+    )
+    # Create skeleton
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts",
+        json={"contact": {"id": "ct_new"}},
+        status=201,
+    )
+    # Re-fetch to detect concurrent-creation race
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": [{"id": "ct_new", "email": "new@example.com", "dateAdded": "2026-05-15T00:00:00Z"}]},
+        status=200,
+    )
+    contact, resolution = client.resolve_contact_by_email("new@example.com")
+    assert contact["id"] == "ct_new"
+    assert resolution == MultiContactResolution.CREATED_SKELETON
+
+
+@responses.activate
+def test_resolve_contact_single_match(client):
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": [{"id": "ct_1", "email": "p@x.com"}]},
+        status=200,
+    )
+    contact, resolution = client.resolve_contact_by_email("p@x.com")
+    assert contact["id"] == "ct_1"
+    assert resolution == MultiContactResolution.SINGLE
+
+
+@responses.activate
+def test_resolve_contact_multi_match_prefers_in_campaign(client):
+    """When multiple contacts match, prefer one that's in the configured campaign_ids."""
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": [
+            {"id": "ct_old", "email": "p@x.com", "dateAdded": "2026-01-01T00:00:00Z", "campaigns": []},
+            {"id": "ct_active", "email": "p@x.com", "dateAdded": "2026-04-01T00:00:00Z", "campaigns": ["c1"]},
+        ]},
+        status=200,
+    )
+    contact, resolution = client.resolve_contact_by_email("p@x.com")
+    assert contact["id"] == "ct_active"
+    assert resolution == MultiContactResolution.RESOLVED_BY_CAMPAIGN
+
+
+@responses.activate
+def test_resolve_contact_multi_match_ambiguous_picks_most_recent(client):
+    """When multi-match and none in campaign, fall back to most recently modified + flag ambiguous."""
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": [
+            {"id": "ct_a", "email": "p@x.com", "dateAdded": "2026-01-01T00:00:00Z", "campaigns": []},
+            {"id": "ct_b", "email": "p@x.com", "dateAdded": "2026-04-01T00:00:00Z", "campaigns": []},
+        ]},
+        status=200,
+    )
+    contact, resolution = client.resolve_contact_by_email("p@x.com")
+    assert contact["id"] == "ct_b"
+    assert resolution == MultiContactResolution.AMBIGUOUS

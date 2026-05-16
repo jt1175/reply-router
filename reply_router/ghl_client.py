@@ -10,6 +10,7 @@ URLs themselves.
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from typing import Any
 
 import requests
@@ -20,8 +21,11 @@ GHL_BASE_URL = "https://services.leadconnectorhq.com"
 GHL_API_VERSION = "2021-07-28"
 
 
-class MultiContactResolution:  # populated in Task 2.3 (multi-contact resolution)
-    pass
+class MultiContactResolution(Enum):
+    SINGLE = "single"
+    RESOLVED_BY_CAMPAIGN = "resolved_by_campaign"
+    AMBIGUOUS = "ambiguous"
+    CREATED_SKELETON = "created_skeleton"
 
 
 class GHLClient:
@@ -151,3 +155,76 @@ class GHLClient:
             raise RuntimeError(
                 f"GHL add_to_dnc failed: status={resp.status_code} body={resp.text[:200]}"
             )
+
+    def resolve_contact_by_email(
+        self, email: str
+    ) -> tuple[dict[str, Any], MultiContactResolution]:
+        """Resolve a single contact for this email per spec §4.1 step 5b.
+
+        Returns (contact, resolution). Caller uses `resolution` to decide:
+        - SINGLE: proceed normally
+        - RESOLVED_BY_CAMPAIGN: proceed normally
+        - AMBIGUOUS: caller forces shadow_send, adds 'ambiguous_contact_match' tag
+        - CREATED_SKELETON: caller adds 'auto_created_from_reply' tag + Slack warn
+        """
+        contacts = self.get_contacts_by_email(email)
+        if not contacts:
+            # Create skeleton, then re-fetch to detect concurrent creation race
+            create_url = f"{GHL_BASE_URL}/contacts"
+            create_payload = {
+                "locationId": self.sub_account_id,
+                "email": email,
+                "tags": ["auto_created_from_reply"],
+            }
+            resp = requests.post(
+                create_url, headers=self._headers(), json=create_payload, timeout=10
+            )
+            if resp.status_code not in (200, 201):
+                raise RuntimeError(
+                    f"GHL skeleton contact create failed: status={resp.status_code}"
+                )
+            created_id = resp.json().get("contact", {}).get("id")
+            # Re-fetch: if >1 result, the race happened — pick lowest-id, log warning
+            refetched = self.get_contacts_by_email(email)
+            if len(refetched) > 1:
+                logger.warning(
+                    "Concurrent skeleton creation race detected for email=%s; "
+                    "found %d contacts post-create",
+                    email, len(refetched),
+                )
+                # Pick the lowest-id (earliest) to keep deterministic
+                chosen = min(refetched, key=lambda c: c["id"])
+                # Delete the others we created — caller will be told CREATED_SKELETON
+                for c in refetched:
+                    if c["id"] != chosen["id"] and c["id"] == created_id:
+                        # Try to clean up our own creation if it was the duplicate
+                        try:
+                            requests.delete(
+                                f"{GHL_BASE_URL}/contacts/{c['id']}",
+                                headers=self._headers(), timeout=10,
+                            )
+                        except requests.RequestException:
+                            pass
+                return chosen, MultiContactResolution.CREATED_SKELETON
+            return refetched[0] if refetched else {"id": created_id, "email": email}, \
+                MultiContactResolution.CREATED_SKELETON
+
+        if len(contacts) == 1:
+            return contacts[0], MultiContactResolution.SINGLE
+
+        # 2+ matches — prefer one in our campaigns
+        in_campaign = [
+            c for c in contacts
+            if any(camp in self.campaign_ids for camp in (c.get("campaigns") or []))
+        ]
+        if len(in_campaign) == 1:
+            return in_campaign[0], MultiContactResolution.RESOLVED_BY_CAMPAIGN
+        # Tied or none in campaign — pick most recently added, mark ambiguous
+        sorted_by_date = sorted(
+            contacts, key=lambda c: c.get("dateAdded", ""), reverse=True
+        )
+        logger.warning(
+            "Ambiguous contact match for email=%s: %d candidates, picking most recent",
+            email, len(contacts),
+        )
+        return sorted_by_date[0], MultiContactResolution.AMBIGUOUS

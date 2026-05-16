@@ -7,12 +7,18 @@ from __future__ import annotations
 
 import logging
 import os
+import time as _time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from email.utils import parseaddr
 from typing import Any, Literal
 
+from reply_router.classifier import classify
 from reply_router.dedupe import check_rolling, check_soft_lock, acquire_soft_lock, SoftLockState
 from reply_router.ghl_client import GHLClient, MultiContactResolution
+from reply_router.responder import requires_shadow
+from reply_router.routing import route
+from reply_router.slack_client import post_urgent
 
 logger = logging.getLogger(__name__)
 
@@ -146,5 +152,109 @@ def process_reply(
         payload.message_id,
     )
 
-    # Rest of pipeline lands in 4.1d–4.1g.
-    raise NotImplementedError("rest of pipeline lands in Tasks 4.1d–4.1g")
+    # §4.1 step 6 — classify
+    cls_result = classify(
+        reply_text=payload.reply_text,
+        sender_persona=payload.sender_persona,
+        sender_email=payload.from_email,
+        original_subject=payload.original_subject,
+        company_name=contact.get("companyName", ""),
+        anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+    )
+    classification = cls_result["classification"]
+    confidence = cls_result["confidence"]
+
+    # §4.1 step 13a pre-check — booking link sentinel forces shadow
+    booking_link_placeholder = requires_shadow(classification, client_config.business_context)
+
+    # §4.1 step 7 — routing (or special path for unknown)
+    action_cfg = client_config.classification_actions.get(classification)
+    if classification == "unknown" or action_cfg is None:
+        # Classifier returned 'unknown' OR unknown classification key — special path,
+        # full handling lands in 4.1g (_handle_unknown). For now, mark None so we
+        # skip the GHL writes and raise NotImplementedError below.
+        action_bundle = None
+    else:
+        action_bundle = route(
+            classification=classification,
+            confidence=confidence,
+            suggested_followup_date_iso=cls_result.get("suggested_followup_date_iso"),
+            classification_action=action_cfg,
+            ambiguous_contact=(resolution == MultiContactResolution.AMBIGUOUS),
+            skeleton_contact=(resolution == MultiContactResolution.CREATED_SKELETON),
+            booking_link_placeholder=booking_link_placeholder,
+        )
+
+    # §4.1 steps 8–11 — GHL writes (only when we have a valid action_bundle)
+    if action_bundle is not None:
+        ghl.update_contact(
+            contact["id"],
+            custom_fields={
+                fids["reply_classification"]: classification,
+                fids["reply_received_at"]: datetime.now(timezone.utc).isoformat(),
+                fids["contract_end_date"]: action_bundle.contract_end_date_iso or "",
+                fids["nurture_bucket"]: action_bundle.nurture_bucket or "",
+            },
+        )
+        ghl.add_tags(contact["id"], action_bundle.tags_to_add)
+        ghl.add_note(
+            contact["id"],
+            body=(
+                f"Classified as {classification} (confidence: {confidence})\n"
+                f"Reasoning: {cls_result.get('reasoning', '—')}\n\n"
+                f"Reply:\n{payload.reply_text}"
+            ),
+        )
+        ghl.move_to_pipeline_stage(
+            contact_id=contact["id"],
+            pipeline_id=client_config.ghl.pipeline_id,
+            stage_id=action_bundle.pipeline_stage_id,
+        )
+
+        # §4.1 step 12 — DNC if routing says so (only unsubscribe). 3-retry with URGENT.
+        if action_bundle.dnc:
+            slack_url = os.environ.get(client_config.slack.incoming_webhook_url_env, "")
+            try:
+                _ghl_dnc_with_retry(ghl, contact["id"], slack_url, contact, payload)
+            except RuntimeError as exc:
+                logger.error("DNC write escalated to URGENT after retries: %s", exc)
+                return ProcessResult(
+                    status="deferred_for_retry",
+                    http_status=503,
+                    classification=classification,
+                    notes=[f"GHL DNC failed after retries: {exc}"],
+                )
+
+    # Rest of pipeline (responder, send/shadow, mark_complete) lands in 4.1e-g.
+    raise NotImplementedError("rest of pipeline lands in Tasks 4.1e–4.1g")
+
+
+def _ghl_dnc_with_retry(ghl, contact_id: str, slack_url: str, contact: dict, payload: ReplyPayload) -> None:
+    """§6.1 row 1: DNC failures retry 3× then URGENT Slack alert.
+
+    Raises RuntimeError after 3 retries — caller catches and returns 5xx so Smartlead
+    retries the webhook. Returns normally if any retry succeeds.
+    """
+    last_err = None
+    for attempt in range(3):
+        try:
+            ghl.add_to_dnc(contact_id)
+            return
+        except RuntimeError as exc:
+            last_err = exc
+            logger.warning("GHL DNC write failed attempt=%d err=%s", attempt + 1, exc)
+            _time.sleep(0.5 * (attempt + 1))
+    # All 3 failed — alert and re-raise
+    if slack_url:
+        post_urgent(
+            slack_url,
+            title="Unsubscribe not honored in GHL",
+            action_required=(
+                f"1. Open GHL contact for {payload.lead_email}\n"
+                f"2. Manually add to DNC list\n"
+                f"3. Open Smartlead campaign {payload.campaign_id} and manually unsubscribe\n"
+                f"4. Reply ✅ in this thread when done"
+            ),
+            reply_text=payload.reply_text,
+        )
+    raise RuntimeError(f"GHL DNC failed after 3 retries: {last_err}")

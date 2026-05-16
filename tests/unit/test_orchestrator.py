@@ -48,6 +48,7 @@ def _stub_config():
     cfg.ghl.pipeline_id = "p"
     cfg.ghl.api_key_env = "TEST_GHL_API_KEY"
     cfg.smartlead.campaign_ids = ["c1"]
+    cfg.slack.incoming_webhook_url_env = "TEST_SLACK_URL"
     return cfg
 
 
@@ -113,7 +114,7 @@ def test_soft_lock_in_flight_returns_in_flight_status(monkeypatch):
 def test_soft_lock_stale_proceeds_to_classification(mock_classify, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
-    # Return 'unknown' so GHL writes are skipped — update_contact called only once (soft lock)
+    # Return 'unknown' so GHL writes are skipped — _handle_unknown + mark_complete runs
     mock_classify.return_value = {"classification": "unknown", "confidence": "low",
                                   "suggested_followup_date_iso": None, "reasoning": "n/a"}
     ghl_mock = MagicMock()
@@ -128,10 +129,10 @@ def test_soft_lock_stale_proceeds_to_classification(mock_classify, monkeypatch):
     }
     ghl_mock.resolve_contact_by_email.return_value = (contact, MultiContactResolution.SINGLE)
     with patch("reply_router.orchestrator._build_ghl_client", return_value=ghl_mock):
-        with pytest.raises(NotImplementedError):
-            process_reply(_stub_config(), _payload(mid="m_stale"))
-    # Soft lock was acquired (overwritten); GHL writes skipped (unknown → action_bundle=None)
-    ghl_mock.update_contact.assert_called_once()
+        result = process_reply(_stub_config(), _payload(mid="m_stale"))
+    assert result.status == "processed"
+    # Soft lock was acquired (overwritten); mark_complete also called update_contact
+    ghl_mock.update_contact.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +155,10 @@ def test_skeleton_contact_created_when_no_match(mock_classify, monkeypatch):
         skeleton_contact, MultiContactResolution.CREATED_SKELETON
     )
     with patch("reply_router.orchestrator._build_ghl_client", return_value=ghl_mock):
-        with pytest.raises(NotImplementedError):
-            process_reply(_stub_config(), _payload(mid="m_skel"))
-    # Soft lock was acquired; GHL writes skipped (unknown → action_bundle=None)
-    ghl_mock.update_contact.assert_called_once()
+        result = process_reply(_stub_config(), _payload(mid="m_skel"))
+    assert result.status == "processed"
+    # Soft lock was acquired; mark_complete also called update_contact
+    ghl_mock.update_contact.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -177,10 +178,10 @@ def test_single_contact_proceeds_normally(mock_classify, monkeypatch):
     }
     ghl_mock.resolve_contact_by_email.return_value = (contact, MultiContactResolution.RESOLVED_BY_CAMPAIGN)
     with patch("reply_router.orchestrator._build_ghl_client", return_value=ghl_mock):
-        with pytest.raises(NotImplementedError):
-            process_reply(_stub_config(), _payload(mid="m_single"))
-    # Soft lock acquired; GHL writes skipped (unknown → action_bundle=None)
-    ghl_mock.update_contact.assert_called_once()
+        result = process_reply(_stub_config(), _payload(mid="m_single"))
+    assert result.status == "processed"
+    # Soft lock acquired; mark_complete also called update_contact
+    ghl_mock.update_contact.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -200,12 +201,13 @@ def test_ambiguous_contact_still_acquires_lock(mock_classify, monkeypatch):
     }
     ghl_mock.resolve_contact_by_email.return_value = (contact, MultiContactResolution.AMBIGUOUS)
     with patch("reply_router.orchestrator._build_ghl_client", return_value=ghl_mock):
-        with pytest.raises(NotImplementedError):
-            process_reply(_stub_config(), _payload(mid="m_ambig"))
-    # Soft lock must have been acquired on the ambiguous contact; GHL writes skipped (unknown)
-    ghl_mock.update_contact.assert_called_once()
-    call_args = ghl_mock.update_contact.call_args
-    assert call_args[0][0] == "ct_ambig"
+        result = process_reply(_stub_config(), _payload(mid="m_ambig"))
+    assert result.status == "processed"
+    # Soft lock must have been acquired on the ambiguous contact; mark_complete also ran
+    ghl_mock.update_contact.assert_called()
+    # First call was for soft lock on "ct_ambig"
+    first_call = ghl_mock.update_contact.call_args_list[0]
+    assert first_call[0][0] == "ct_ambig"
 
 
 # ---------------------------------------------------------------------------
@@ -443,11 +445,13 @@ def test_unsubscribe_low_confidence_still_honored(mock_build, mock_classify, moc
 # §7.3 #13 setup — unknown classification → GHL writes skipped
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_urgent")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_unknown_classification_skips_ghl_writes(mock_build, mock_classify, monkeypatch):
+def test_unknown_classification_skips_ghl_writes(mock_build, mock_classify, mock_post_urgent, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/fake")
     ghl_mock = MagicMock()
     ghl_mock.resolve_contact_by_email.return_value = (
         _clean_contact("ct_unk"), MultiContactResolution.SINGLE,
@@ -457,14 +461,15 @@ def test_unknown_classification_skips_ghl_writes(mock_build, mock_classify, monk
         "classification": "unknown", "confidence": "low",
         "suggested_followup_date_iso": None, "reasoning": "classifier gave up",
     }
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_unk"))
-    # Only the soft-lock update_contact should have been called (not GHL writes)
-    # update_contact called exactly once (soft lock), never with cf_class in custom_fields
+    result = process_reply(_stub_config_full(), _payload(mid="m_unk"))
+    assert result.status == "processed"
+    assert result.classification == "unknown"
+    # Classification fields (cf_class) must NOT be written — no standard GHL pipeline write
     for c in ghl_mock.update_contact.call_args_list:
         cf = c[1].get("custom_fields") or {}
         assert "cf_class" not in cf, "GHL write should not happen for unknown classification"
-    ghl_mock.add_tags.assert_not_called()
+    # add_tags called only via _handle_unknown (not the standard routing path)
+    ghl_mock.add_tags.assert_called_once_with("ct_unk", ["replied", "unknown"])
     ghl_mock.add_to_dnc.assert_not_called()
 
 
@@ -865,3 +870,225 @@ def test_smartlead_mark_unsubscribe_not_called_for_non_unsubscribe(mock_build, m
     with pytest.raises(NotImplementedError):
         process_reply(_stub_config_full(), _payload(mid="m_wp"))
     sl_instance.mark_unsubscribe.assert_not_called()
+
+
+# ===========================================================================
+# Task 4.1g — mark_complete decision table + _handle_unknown (§4.1 step 14)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# §7.3 #13 — unknown classification → _handle_unknown called → mark_complete → "processed"
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_urgent")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_classifier_unknown_fallback(mock_build, mock_classify, mock_post_urgent, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/fake")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        _clean_contact("ct_unk"), MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unknown", "confidence": "low",
+        "suggested_followup_date_iso": None, "reasoning": "classifier gave up",
+    }
+    result = process_reply(_stub_config_full(), _payload(mid="m_unk_fg"))
+    # Returns processed (not raises)
+    assert result.status == "processed"
+    assert result.classification == "unknown"
+    assert result.http_status == 200
+    # ghl.add_tags called with ["replied", "unknown"]
+    ghl_mock.add_tags.assert_called_once_with("ct_unk", ["replied", "unknown"])
+    # ghl.add_note called with text containing "MANUAL CLASSIFICATION NEEDED"
+    note_call = ghl_mock.add_note.call_args
+    assert "MANUAL CLASSIFICATION NEEDED" in note_call[0][1] or "MANUAL CLASSIFICATION NEEDED" in str(note_call)
+    # post_urgent called with correct title
+    mock_post_urgent.assert_called_once()
+    assert mock_post_urgent.call_args[1]["title"] == "MANUAL CLASSIFICATION NEEDED — classifier returned unknown"
+    # mark_complete happened: rolling field written with hash of message_id
+    all_calls = ghl_mock.update_contact.call_args_list
+    rolling_call = next(
+        (c for c in all_calls if "cf_roll" in (c[1].get("custom_fields") or {})),
+        None,
+    )
+    assert rolling_call is not None, "mark_complete should have written the rolling field"
+    written_ids = json.loads(rolling_call[1]["custom_fields"]["cf_roll"])
+    assert hash16("m_unk_fg") in written_ids
+
+
+# ---------------------------------------------------------------------------
+# §7.3 #9c — responder returns failed=True, requires_shadow=True → deferred, no mark_complete
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_response_length_validation_defers_dedupe_complete(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_short", "customFields": [], "companyName": "Short Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "wrong_person", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "redirected",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    # Text outside 20-800 char range → failed=True, requires_shadow=True
+    mock_gen.return_value = ResponderResult(text="too short", requires_shadow=True, failed=True)
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    result = process_reply(cfg, _payload_full(mid="m_short"))
+    # Returns deferred (not raises)
+    assert result.status == "deferred_for_retry"
+    assert result.http_status == 503
+    # mark_complete NOT called: rolling field must NOT be written
+    for c in ghl_mock.update_contact.call_args_list:
+        cf = c[1].get("custom_fields") or {}
+        assert "cf_roll" not in cf, "mark_complete (rolling list write) must NOT happen on responder failure"
+
+
+# ---------------------------------------------------------------------------
+# §4.1 step 14 — auto_send success path → mark_complete called before 4.1h handoff
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_mark_complete_called_on_auto_send_happy_path(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_mc_auto", "customFields": [], "companyName": "Mark Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unsubscribe", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "remove me",
+    }
+    sl_instance = MagicMock()
+    sl_instance.mark_unsubscribe.return_value = None  # success
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Removed you from our list.", requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    with pytest.raises(NotImplementedError):
+        process_reply(cfg, _payload(mid="m_mc_auto"))
+    # mark_complete wrote rolling field with hash of message_id
+    all_calls = ghl_mock.update_contact.call_args_list
+    rolling_call = next(
+        (c for c in all_calls if "cf_roll" in (c[1].get("custom_fields") or {})),
+        None,
+    )
+    assert rolling_call is not None, "mark_complete must write rolling field on auto_send success"
+    written_ids = json.loads(rolling_call[1]["custom_fields"]["cf_roll"])
+    assert hash16("m_mc_auto") in written_ids
+
+
+# ---------------------------------------------------------------------------
+# §4.1 step 14 — shadow_send path → mark_complete called before 4.1h handoff
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_mark_complete_called_on_shadow_send_path(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_mc_shad", "customFields": [], "companyName": "Shadow Corp"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "interested", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "wants a demo",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Great to hear! Here's a link to book a call.",
+        requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    # interested has auto_send=False → shadow_send
+    with pytest.raises(NotImplementedError):
+        process_reply(cfg, _payload_full(mid="m_mc_shad"))
+    all_calls = ghl_mock.update_contact.call_args_list
+    rolling_call = next(
+        (c for c in all_calls if "cf_roll" in (c[1].get("custom_fields") or {})),
+        None,
+    )
+    assert rolling_call is not None, "mark_complete must write rolling field on shadow_send"
+    written_ids = json.loads(rolling_call[1]["custom_fields"]["cf_roll"])
+    assert hash16("m_mc_shad") in written_ids
+
+
+# ---------------------------------------------------------------------------
+# §7.3 #4 supplement — unsub_failed=True still marks complete
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_urgent")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_mark_complete_called_when_unsub_failed(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_unsub_mc", "customFields": [], "companyName": "Acme"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unsubscribe", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "explicit",
+    }
+    from reply_router.smartlead_client import SmartleadError
+    sl_instance = MagicMock()
+    sl_instance.mark_unsubscribe.side_effect = SmartleadError("502")
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Removed you from our list. Sorry for the interruption.",
+        requires_shadow=False, failed=False,
+    )
+    # mark_unsubscribe fails 3× → unsub_failed=True — but mark_complete still called
+    with pytest.raises(NotImplementedError):
+        process_reply(_stub_config_full(), _payload(mid="m_unsub_mc"))
+    all_calls = ghl_mock.update_contact.call_args_list
+    rolling_call = next(
+        (c for c in all_calls if "cf_roll" in (c[1].get("custom_fields") or {})),
+        None,
+    )
+    assert rolling_call is not None, "mark_complete must write rolling field even when unsub_failed=True"
+    written_ids = json.loads(rolling_call[1]["custom_fields"]["cf_roll"])
+    assert hash16("m_unsub_mc") in written_ids

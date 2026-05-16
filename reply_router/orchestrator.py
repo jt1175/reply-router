@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from reply_router.approvals import generate_token, store_draft
 from reply_router.classifier import classify
-from reply_router.dedupe import check_rolling, check_soft_lock, acquire_soft_lock, SoftLockState
+from reply_router.dedupe import check_rolling, check_soft_lock, acquire_soft_lock, mark_complete, SoftLockState
 from reply_router.ghl_client import GHLClient, MultiContactResolution
 from reply_router.responder import generate_contextual, generate_template, requires_shadow
 from reply_router.routing import route
@@ -227,10 +227,20 @@ def process_reply(
                     notes=[f"GHL DNC failed after retries: {exc}"],
                 )
 
-    # If action_bundle is None (unknown classification), defer to 4.1g's _handle_unknown.
-    # For now raise NotImplementedError as the handoff marker.
+    # Unknown classification — handed off to human review (§7.3 #13 + §4.1 decision table).
+    # Per spec: handoff IS the action; mark complete + return processed.
     if action_bundle is None:
-        raise NotImplementedError("unknown classification handling lands in Task 4.1g")
+        slack_url = os.environ.get(client_config.slack.incoming_webhook_url_env, "")
+        _handle_unknown(ghl, slack_url, contact, payload, cls_result)
+        mark_complete(
+            ghl, contact,
+            rolling_field_id=fids["last_processed_smartlead_message_ids"],
+            soft_lock_field_id=fids["currently_processing_smartlead_message_id"],
+            message_id=payload.message_id,
+        )
+        return ProcessResult(
+            status="processed", http_status=200, classification="unknown",
+        )
 
     # §4.1 step 13b — generate response
     responder_result = _generate_response(
@@ -317,8 +327,20 @@ def process_reply(
             smartlead, payload, contact, slack_url
         )
 
-    # Tasks 4.1g (mark_complete + _handle_unknown) and 4.1h (Slack notify + final response).
-    raise NotImplementedError("mark_complete + Slack land in Tasks 4.1g-h")
+    # §4.1 step 14 — mark_complete decision table.
+    # We only reach this code if responder didn't fail, send didn't fail, DNC didn't
+    # escalate. So mark complete unconditionally (the deferred paths returned 503 above).
+    # Note: unsub_failed is True only when Smartlead mark_unsubscribe failed — but we STILL
+    # mark complete (URGENT Slack alert is recovery; we don't want Smartlead to retry).
+    mark_complete(
+        ghl, contact,
+        rolling_field_id=fids["last_processed_smartlead_message_ids"],
+        soft_lock_field_id=fids["currently_processing_smartlead_message_id"],
+        message_id=payload.message_id,
+    )
+
+    # Task 4.1h adds Slack notify + final ProcessResult here.
+    raise NotImplementedError("Slack notify + final response land in Task 4.1h")
 
 
 def _ghl_dnc_with_retry(ghl, contact_id: str, slack_url: str, contact: dict, payload: ReplyPayload) -> None:
@@ -442,3 +464,26 @@ def _smartlead_unsub_with_retry(
         )
     logger.error("Smartlead mark_unsubscribe failed after 3 retries: %s", last_err)
     return False
+
+
+def _handle_unknown(ghl, slack_url: str, contact: dict, payload: ReplyPayload, cls_result: dict) -> None:
+    """Classifier returned 'unknown' after retry — hand off to human, but mark complete.
+
+    Per §7.3 #13 + §4.1 decision table: handoff IS the action.
+    """
+    ghl.add_tags(contact["id"], ["replied", "unknown"])
+    ghl.add_note(
+        contact["id"],
+        f"MANUAL CLASSIFICATION NEEDED — classifier returned unknown.\n\nReply:\n{payload.reply_text}",
+    )
+    if slack_url:
+        post_urgent(
+            slack_url,
+            title="MANUAL CLASSIFICATION NEEDED — classifier returned unknown",
+            action_required=(
+                "1. Open the GHL contact and read the prospect's reply\n"
+                "2. Manually set classification + reply via Smartlead UI\n"
+                "3. Reply ✅ when done"
+            ),
+            reply_text=payload.reply_text,
+        )

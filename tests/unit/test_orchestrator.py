@@ -5,6 +5,7 @@ import json
 import time
 
 import pytest
+from freezegun import freeze_time
 from unittest.mock import MagicMock, patch
 
 from reply_router.orchestrator import _normalize_email, process_reply, ReplyPayload
@@ -277,10 +278,11 @@ def _clean_contact(contact_id="ct_1"):
 # §4.1 steps 8–11 happy path — interested/high → GHL writes → NotImplementedError
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_interested_high_confidence_writes_ghl_then_raises_notimpl(mock_build, mock_classify, mock_gen_response, monkeypatch):
+def test_interested_high_confidence_writes_ghl(mock_build, mock_classify, mock_gen_response, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     from reply_router.responder import ResponderResult
@@ -294,8 +296,8 @@ def test_interested_high_confidence_writes_ghl_then_raises_notimpl(mock_build, m
         "classification": "interested", "confidence": "high",
         "suggested_followup_date_iso": None, "reasoning": "asked for call",
     }
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_new"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_new"))
+    assert result.status == "processed"
     ghl_mock.update_contact.assert_called()
     ghl_mock.add_tags.assert_called()
     ghl_mock.add_note.assert_called()
@@ -309,11 +311,12 @@ def test_interested_high_confidence_writes_ghl_then_raises_notimpl(mock_build, m
 # §4.1 step 12 — unsubscribe → DNC call made
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_unsubscribe_triggers_dnc_call(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+def test_unsubscribe_triggers_dnc_call(mock_build, mock_classify, mock_sl_cls, mock_gen_response, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/fake")
@@ -331,8 +334,8 @@ def test_unsubscribe_triggers_dnc_call(mock_build, mock_classify, mock_sl_cls, m
         "classification": "unsubscribe", "confidence": "high",
         "suggested_followup_date_iso": None, "reasoning": "please remove me",
     }
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_unsub"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_unsub"))
+    assert result.status == "processed"
     ghl_mock.add_to_dnc.assert_called_once_with("ct_unsub")
 
 
@@ -372,10 +375,11 @@ def test_dnc_write_failure_escalates(mock_build, mock_classify, mock_post_urgent
 # §4.1 step 8 — not_now with followup date → contract_end_date written
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_not_now_writes_contract_end_date(mock_build, mock_classify, mock_gen_response, monkeypatch):
+def test_not_now_writes_contract_end_date(mock_build, mock_classify, mock_gen_response, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     from reply_router.responder import ResponderResult
@@ -389,8 +393,8 @@ def test_not_now_writes_contract_end_date(mock_build, mock_classify, mock_gen_re
         "classification": "not_now", "confidence": "medium",
         "suggested_followup_date_iso": "2026-09-01", "reasoning": "busy until fall",
     }
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_nn"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_nn"))
+    assert result.status == "processed"
     # Check contract_end_date written in update_contact custom_fields
     # update_contact is called twice: once for soft lock, once for GHL writes
     # Find the GHL-writes call (has cf_class in custom_fields)
@@ -405,11 +409,12 @@ def test_not_now_writes_contract_end_date(mock_build, mock_classify, mock_gen_re
 # §7.3 #2 — unsubscribe with low confidence → carve-out bypasses gate → DNC honored
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_unsubscribe_low_confidence_still_honored(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+def test_unsubscribe_low_confidence_still_honored(mock_build, mock_classify, mock_sl_cls, mock_gen_response, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/fake")
@@ -427,8 +432,8 @@ def test_unsubscribe_low_confidence_still_honored(mock_build, mock_classify, moc
         "classification": "unsubscribe", "confidence": "low",
         "suggested_followup_date_iso": None, "reasoning": "maybe unsubscribe",
     }
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_low_unsub"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_low_unsub"))
+    assert result.status == "processed"
     # GHL writes happened (carve-out bypasses confidence gate)
     ghl_mock.update_contact.assert_called()
     ghl_mock.add_tags.assert_called()
@@ -490,11 +495,12 @@ def _payload_full(mid="m_x", email_stats_id="es_1"):
 # §7.3 — auto_send path: wrong_person/high → SmartleadClient.send_reply_in_thread called
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_responder_auto_send_calls_smartlead(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+def test_responder_auto_send_calls_smartlead(mock_build, mock_classify, mock_sl_cls, mock_gen_response, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
@@ -517,8 +523,8 @@ def test_responder_auto_send_calls_smartlead(mock_build, mock_classify, mock_sl_
     )
     cfg = _stub_config_full()
     cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
-    with pytest.raises(NotImplementedError):
-        process_reply(cfg, _payload_full(mid="m_x"))
+    result = process_reply(cfg, _payload_full(mid="m_x"))
+    assert result.status == "processed"
     sl_instance.send_reply_in_thread.assert_called_once()
     call = sl_instance.send_reply_in_thread.call_args
     assert call.kwargs["campaign_id"] == "c1"
@@ -529,11 +535,12 @@ def test_responder_auto_send_calls_smartlead(mock_build, mock_classify, mock_sl_
 # §7.3 — shadow_send path: interested/high + auto_send=False → store_draft + threading params
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_responder_shadow_send_stores_draft_and_threading_params(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+def test_responder_shadow_send_stores_draft_and_threading_params(mock_build, mock_classify, mock_sl_cls, mock_gen_response, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
@@ -557,8 +564,8 @@ def test_responder_shadow_send_stores_draft_and_threading_params(mock_build, moc
     cfg = _stub_config_full()
     cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
     # interested has auto_send=False in _stub_config_full → shadow_send
-    with pytest.raises(NotImplementedError):
-        process_reply(cfg, _payload_full(mid="m_sh", email_stats_id="es_sh"))
+    result = process_reply(cfg, _payload_full(mid="m_sh", email_stats_id="es_sh"))
+    assert result.status == "processed"
     # NO Smartlead send
     sl_instance.send_reply_in_thread.assert_not_called()
     # Must have TWO update_contact calls after the soft lock:
@@ -586,11 +593,12 @@ def test_responder_shadow_send_stores_draft_and_threading_params(mock_build, moc
 # §7.3 #16 — booking-link placeholder forces shadow even when auto_send=True
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_booking_link_placeholder_forces_shadow(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+def test_booking_link_placeholder_forces_shadow(mock_build, mock_classify, mock_sl_cls, mock_gen_response, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
@@ -616,8 +624,8 @@ def test_booking_link_placeholder_forces_shadow(mock_build, mock_classify, mock_
     cfg = _stub_config_full()
     cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
     cfg.business_context.booking_link = "https://x/PLACEHOLDER"
-    with pytest.raises(NotImplementedError):
-        process_reply(cfg, _payload_full(mid="m_ph"))
+    result = process_reply(cfg, _payload_full(mid="m_ph"))
+    assert result.status == "processed"
     # Forced to shadow_send → no Smartlead send
     sl_instance.send_reply_in_thread.assert_not_called()
     # Draft stored
@@ -716,11 +724,12 @@ def test_responder_generate_failure_defers_dedupe_complete(mock_build, mock_clas
 # ghl.add_to_dnc → smartlead.send_reply_in_thread → smartlead.mark_unsubscribe
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_unsubscribe_full_path_correct_ordering(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+def test_unsubscribe_full_path_correct_ordering(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake")
@@ -747,8 +756,8 @@ def test_unsubscribe_full_path_correct_ordering(mock_build, mock_classify, mock_
         text="Removed you from our list. Sorry for the interruption.",
         requires_shadow=False, failed=False,
     )
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_unsub"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_unsub"))
+    assert result.status == "processed"
     assert call_order == ["dnc", "send", "unsub"], f"wrong order: {call_order}"
 
 
@@ -757,12 +766,13 @@ def test_unsubscribe_full_path_correct_ordering(mock_build, mock_classify, mock_
 # (post-send block does NOT 5xx — reply already sent)
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator.post_urgent")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_smartlead_mark_unsubscribe_failure_escalates(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, monkeypatch):
+def test_smartlead_mark_unsubscribe_failure_escalates(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake")
@@ -787,9 +797,10 @@ def test_smartlead_mark_unsubscribe_failure_escalates(mock_build, mock_classify,
         text="Removed you from our list. Sorry for the interruption.",
         requires_shadow=False, failed=False,
     )
-    # Must raise NotImplementedError (not return 503 — reply already sent)
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_unsub_fail"))
+    # Must return processed (not raise) — reply already sent; mark_unsubscribe failure
+    # triggers URGENT Slack but does NOT 5xx the response
+    result = process_reply(_stub_config_full(), _payload(mid="m_unsub_fail"))
+    assert result.status == "processed"
     # All 3 retries attempted
     assert sl_instance.mark_unsubscribe.call_count == 3
     # URGENT Slack alert fired once with correct title
@@ -801,12 +812,13 @@ def test_smartlead_mark_unsubscribe_failure_escalates(mock_build, mock_classify,
 # Successful unsubscribe → mark_unsubscribe succeeds → post_urgent NOT called
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator.post_urgent")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_normal_confidence_unsubscribe_does_not_trigger_slack(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, monkeypatch):
+def test_normal_confidence_unsubscribe_does_not_trigger_slack(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake")
@@ -830,8 +842,8 @@ def test_normal_confidence_unsubscribe_does_not_trigger_slack(mock_build, mock_c
         text="Removed you from our list. Sorry for the interruption.",
         requires_shadow=False, failed=False,
     )
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_unsub_ok"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_unsub_ok"))
+    assert result.status == "processed"
     # mark_unsubscribe succeeded → no URGENT alert
     mock_post.assert_not_called()
 
@@ -840,11 +852,12 @@ def test_normal_confidence_unsubscribe_does_not_trigger_slack(mock_build, mock_c
 # Non-unsubscribe classification → mark_unsubscribe never called
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_smartlead_mark_unsubscribe_not_called_for_non_unsubscribe(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+def test_smartlead_mark_unsubscribe_not_called_for_non_unsubscribe(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake")
@@ -867,8 +880,8 @@ def test_smartlead_mark_unsubscribe_not_called_for_non_unsubscribe(mock_build, m
         text="Who should I speak with?",
         requires_shadow=False, failed=False,
     )
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_wp"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_wp"))
+    assert result.status == "processed"
     sl_instance.mark_unsubscribe.assert_not_called()
 
 
@@ -963,11 +976,12 @@ def test_response_length_validation_defers_dedupe_complete(mock_build, mock_clas
 # §4.1 step 14 — auto_send success path → mark_complete called before 4.1h handoff
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_mark_complete_called_on_auto_send_happy_path(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+def test_mark_complete_called_on_auto_send_happy_path(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
@@ -991,8 +1005,8 @@ def test_mark_complete_called_on_auto_send_happy_path(mock_build, mock_classify,
     )
     cfg = _stub_config_full()
     cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
-    with pytest.raises(NotImplementedError):
-        process_reply(cfg, _payload(mid="m_mc_auto"))
+    result = process_reply(cfg, _payload(mid="m_mc_auto"))
+    assert result.status == "processed"
     # mark_complete wrote rolling field with hash of message_id
     all_calls = ghl_mock.update_contact.call_args_list
     rolling_call = next(
@@ -1008,11 +1022,12 @@ def test_mark_complete_called_on_auto_send_happy_path(mock_build, mock_classify,
 # §4.1 step 14 — shadow_send path → mark_complete called before 4.1h handoff
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_mark_complete_called_on_shadow_send_path(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+def test_mark_complete_called_on_shadow_send_path(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
@@ -1036,8 +1051,8 @@ def test_mark_complete_called_on_shadow_send_path(mock_build, mock_classify, moc
     cfg = _stub_config_full()
     cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
     # interested has auto_send=False → shadow_send
-    with pytest.raises(NotImplementedError):
-        process_reply(cfg, _payload_full(mid="m_mc_shad"))
+    result = process_reply(cfg, _payload_full(mid="m_mc_shad"))
+    assert result.status == "processed"
     all_calls = ghl_mock.update_contact.call_args_list
     rolling_call = next(
         (c for c in all_calls if "cf_roll" in (c[1].get("custom_fields") or {})),
@@ -1052,12 +1067,13 @@ def test_mark_complete_called_on_shadow_send_path(mock_build, mock_classify, moc
 # §7.3 #4 supplement — unsub_failed=True still marks complete
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator.post_classification_notification")
 @patch("reply_router.orchestrator.post_urgent")
 @patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_mark_complete_called_when_unsub_failed(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, monkeypatch):
+def test_mark_complete_called_when_unsub_failed(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, mock_slack, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SL_API_KEY", "fake")
@@ -1082,8 +1098,8 @@ def test_mark_complete_called_when_unsub_failed(mock_build, mock_classify, mock_
         requires_shadow=False, failed=False,
     )
     # mark_unsubscribe fails 3× → unsub_failed=True — but mark_complete still called
-    with pytest.raises(NotImplementedError):
-        process_reply(_stub_config_full(), _payload(mid="m_unsub_mc"))
+    result = process_reply(_stub_config_full(), _payload(mid="m_unsub_mc"))
+    assert result.status == "processed"
     all_calls = ghl_mock.update_contact.call_args_list
     rolling_call = next(
         (c for c in all_calls if "cf_roll" in (c[1].get("custom_fields") or {})),
@@ -1092,3 +1108,221 @@ def test_mark_complete_called_when_unsub_failed(mock_build, mock_classify, mock_
     assert rolling_call is not None, "mark_complete must write rolling field even when unsub_failed=True"
     written_ids = json.loads(rolling_call[1]["custom_fields"]["cf_roll"])
     assert hash16("m_unsub_mc") in written_ids
+
+
+# ===========================================================================
+# Task 4.1h — Slack notify (best-effort) + final ProcessResult (§4.1 step 15)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Slack notify called when action_bundle.slack_notify=True (interested)
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_classification_notification")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_slack_notify_called_when_action_bundle_says_so(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_notify, monkeypatch):
+    """classification=interested (slack_notify=True) → post_classification_notification called."""
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_slack1", "customFields": [], "companyName": "Notify Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "interested", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "wants a demo",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Great to hear! Here's a link to book a walkthrough.",
+        requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    result = process_reply(cfg, _payload_full(mid="m_notify1"))
+    assert result.status == "processed"
+    # interested has auto_send=False → shadow_send
+    assert result.send_mode == "shadow_send"
+    # Slack notification must have fired
+    mock_notify.assert_called_once()
+    call_kwargs = mock_notify.call_args[1]
+    assert call_kwargs["classification"] == "interested"
+    assert call_kwargs["send_mode"] == "shadow_send"
+
+
+# ---------------------------------------------------------------------------
+# 2. Slack notify skipped for normal-confidence unsubscribe (§7.3 #1)
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_classification_notification")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_slack_notify_skipped_for_normal_unsubscribe(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_notify, monkeypatch):
+    """classification=unsubscribe, confidence=high → action_bundle.slack_notify=False → NOT called."""
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_slack_unsub", "customFields": [], "companyName": "No Notify Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unsubscribe", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "remove me",
+    }
+    sl_instance = MagicMock()
+    sl_instance.mark_unsubscribe.return_value = None
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Removed you from our list.", requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    result = process_reply(cfg, _payload(mid="m_skip_notify"))
+    assert result.status == "processed"
+    # unsubscribe config has slack_notify=False → must NOT call post_classification_notification
+    mock_notify.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 3. Slack notify called for low-confidence unsubscribe (§5.4)
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_classification_notification")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_slack_notify_called_for_low_confidence_unsubscribe(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_notify, monkeypatch):
+    """classification=unsubscribe, confidence=low → routing sets slack_notify=True → called."""
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_low_unsub_n", "customFields": [], "companyName": "Maybe Unsub Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unsubscribe", "confidence": "low",
+        "suggested_followup_date_iso": None, "reasoning": "maybe unsubscribe",
+    }
+    sl_instance = MagicMock()
+    sl_instance.mark_unsubscribe.return_value = None
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Removed you from our list.", requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    result = process_reply(cfg, _payload(mid="m_low_unsub_notify"))
+    assert result.status == "processed"
+    # Low-confidence unsubscribe → routing sets slack_notify=True → notification fires
+    mock_notify.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 4. Slack failure does not break response (spec §6.2 principle 4)
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_classification_notification")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_slack_failure_does_not_break_response(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_notify, monkeypatch):
+    """If post_classification_notification raises, process_reply still returns processed."""
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    mock_notify.side_effect = RuntimeError("simulated Slack bug")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_slack_err", "customFields": [], "companyName": "Error Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "interested", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "wants a demo",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Great to hear! Link to book a call.",
+        requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    # Must NOT raise — Slack errors are swallowed; response still returns processed
+    result = process_reply(cfg, _payload_full(mid="m_slack_err"))
+    assert result.status == "processed"
+
+
+# ---------------------------------------------------------------------------
+# 5. monitoring=True when today < monitoring_until
+# ---------------------------------------------------------------------------
+
+@freeze_time("2026-05-16")
+@patch("reply_router.orchestrator.post_classification_notification")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_monitoring_badge_when_today_before_monitoring_until(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_notify, monkeypatch):
+    """When today < monitoring_until, monitoring=True is passed to post_classification_notification."""
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_mon", "customFields": [], "companyName": "Monitor Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "interested", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "wants a call",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Great to hear! Here's a booking link.",
+        requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    cfg.monitoring_until = "2099-12-31"
+    result = process_reply(cfg, _payload_full(mid="m_mon"))
+    assert result.status == "processed"
+    mock_notify.assert_called_once()
+    # monitoring=True because today (2026-05-16) < monitoring_until (2099-12-31)
+    assert mock_notify.call_args[1]["monitoring"] is True

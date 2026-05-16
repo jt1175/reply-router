@@ -9,7 +9,7 @@ import logging
 import os
 import time as _time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.utils import parseaddr
 from typing import Any, Literal
 
@@ -19,7 +19,7 @@ from reply_router.dedupe import check_rolling, check_soft_lock, acquire_soft_loc
 from reply_router.ghl_client import GHLClient, MultiContactResolution
 from reply_router.responder import generate_contextual, generate_template, requires_shadow
 from reply_router.routing import route
-from reply_router.slack_client import post_urgent
+from reply_router.slack_client import post_classification_notification, post_urgent
 from reply_router.smartlead_client import SmartleadClient, SmartleadError
 
 logger = logging.getLogger(__name__)
@@ -339,8 +339,47 @@ def process_reply(
         message_id=payload.message_id,
     )
 
-    # Task 4.1h adds Slack notify + final ProcessResult here.
-    raise NotImplementedError("Slack notify + final response land in Task 4.1h")
+    # §4.1 step 15 — Slack notify (best-effort).
+    # Routing already encoded the spec's behavior into action_bundle.slack_notify:
+    # - normal-confidence unsubscribe → False (per spec §7.3 #1)
+    # - low-confidence unsubscribe → True (URGENT path, per spec §5.4)
+    # - all other classifications → per classification_action.slack_notify
+    # Do NOT override here with `or classification == "unsubscribe"` — that contradicts
+    # spec §7.3 #1 and was caught by reviewer iteration 2 blocker #2.
+    if action_bundle and action_bundle.slack_notify:
+        slack_url_for_notify = os.environ.get(client_config.slack.incoming_webhook_url_env, "")
+        if slack_url_for_notify:
+            try:
+                monitoring_until_date = date.fromisoformat(client_config.monitoring_until)
+            except (TypeError, ValueError):
+                monitoring_until_date = date.today()  # fallback: assume monitoring already over
+            try:
+                post_classification_notification(
+                    slack_url_for_notify,
+                    classification=classification,
+                    confidence=confidence,
+                    send_mode=effective_send_mode,
+                    account={
+                        "company_name": contact.get("companyName", "—"),
+                        "contact_name": contact.get("firstName") or contact.get("name") or "—",
+                        "contact_title": contact.get("title", "—"),
+                        "pipeline_to": action_bundle.pipeline_stage_id,  # raw ID — v1.1 maps to display name
+                    },
+                    reply_text=payload.reply_text,
+                    response_text=responder_result.text if responder_result else "",
+                    approval_url=approval_url,
+                    monitoring=(date.today() < monitoring_until_date),
+                    ghl_contact_url=f"https://app.gohighlevel.com/contact/{contact['id']}",
+                )
+            except Exception as exc:
+                logger.error("slack notify raised: %s", exc)
+
+    return ProcessResult(
+        status="processed",
+        http_status=200,
+        classification=classification,
+        send_mode=effective_send_mode,
+    )
 
 
 def _ghl_dnc_with_retry(ghl, contact_id: str, slack_url: str, contact: dict, payload: ReplyPayload) -> None:

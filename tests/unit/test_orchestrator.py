@@ -247,6 +247,7 @@ def _stub_config_full():
     cfg.ghl.pipeline_id = "p"
     cfg.ghl.api_key_env = "TEST_GHL_API_KEY"
     cfg.smartlead.campaign_ids = ["c1"]
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
     cfg.slack.incoming_webhook_url_env = "TEST_SLACK_URL"
     cfg.business_context.booking_link = "https://example.com/book"
     from reply_router.config import ClassificationAction
@@ -274,11 +275,14 @@ def _clean_contact(contact_id="ct_1"):
 # §4.1 steps 8–11 happy path — interested/high → GHL writes → NotImplementedError
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_interested_high_confidence_writes_ghl_then_raises_notimpl(mock_build, mock_classify, monkeypatch):
+def test_interested_high_confidence_writes_ghl_then_raises_notimpl(mock_build, mock_classify, mock_gen_response, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(text="Draft reply text here.", requires_shadow=False, failed=False)
     ghl_mock = MagicMock()
     ghl_mock.resolve_contact_by_email.return_value = (
         _clean_contact("ct_1"), MultiContactResolution.SINGLE,
@@ -303,12 +307,19 @@ def test_interested_high_confidence_writes_ghl_then_raises_notimpl(mock_build, m
 # §4.1 step 12 — unsubscribe → DNC call made
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_unsubscribe_triggers_dnc_call(mock_build, mock_classify, monkeypatch):
+def test_unsubscribe_triggers_dnc_call(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(text="Removed you from our list.", requires_shadow=False, failed=False)
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
     ghl_mock = MagicMock()
     ghl_mock.resolve_contact_by_email.return_value = (
         _clean_contact("ct_unsub"), MultiContactResolution.SINGLE,
@@ -359,11 +370,14 @@ def test_dnc_write_failure_escalates(mock_build, mock_classify, mock_post_urgent
 # §4.1 step 8 — not_now with followup date → contract_end_date written
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator._generate_response")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_not_now_writes_contract_end_date(mock_build, mock_classify, monkeypatch):
+def test_not_now_writes_contract_end_date(mock_build, mock_classify, mock_gen_response, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(text="Sounds good, I'll follow up then.", requires_shadow=False, failed=False)
     ghl_mock = MagicMock()
     ghl_mock.resolve_contact_by_email.return_value = (
         _clean_contact("ct_nn"), MultiContactResolution.SINGLE,
@@ -389,12 +403,19 @@ def test_not_now_writes_contract_end_date(mock_build, mock_classify, monkeypatch
 # §7.3 #2 — unsubscribe with low confidence → carve-out bypasses gate → DNC honored
 # ---------------------------------------------------------------------------
 
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
 @patch("reply_router.orchestrator.classify")
 @patch("reply_router.orchestrator._build_ghl_client")
-def test_unsubscribe_low_confidence_still_honored(mock_build, mock_classify, monkeypatch):
+def test_unsubscribe_low_confidence_still_honored(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
     monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl")
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(text="Removed you from our list.", requires_shadow=False, failed=False)
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
     ghl_mock = MagicMock()
     ghl_mock.resolve_contact_by_email.return_value = (
         _clean_contact("ct_low_unsub"), MultiContactResolution.SINGLE,
@@ -445,3 +466,237 @@ def test_unknown_classification_skips_ghl_writes(mock_build, mock_classify, monk
         assert "cf_class" not in cf, "GHL write should not happen for unknown classification"
     ghl_mock.add_tags.assert_not_called()
     ghl_mock.add_to_dnc.assert_not_called()
+
+
+# ===========================================================================
+# §4.1 step 13b–13c tests (Task 4.1e) — responder + auto_send/shadow_send
+# ===========================================================================
+
+def _payload_full(mid="m_x", email_stats_id="es_1"):
+    return ReplyPayload(
+        message_id=mid, from_email="prospect@example.com",
+        lead_email="prospect@example.com",
+        campaign_id="c1", reply_text="Hi, interested in your services",
+        email_stats_id=email_stats_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §7.3 — auto_send path: wrong_person/high → SmartleadClient.send_reply_in_thread called
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_responder_auto_send_calls_smartlead(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_1", "customFields": [], "companyName": "Acme"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "wrong_person", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "redirected",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(
+        text="Thanks Pat. Could you point me to who handles facilities at Acme?",
+        requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    with pytest.raises(NotImplementedError):
+        process_reply(cfg, _payload_full(mid="m_x"))
+    sl_instance.send_reply_in_thread.assert_called_once()
+    call = sl_instance.send_reply_in_thread.call_args
+    assert call.kwargs["campaign_id"] == "c1"
+    assert call.kwargs["body"].startswith("Thanks Pat")
+
+
+# ---------------------------------------------------------------------------
+# §7.3 — shadow_send path: interested/high + auto_send=False → store_draft + threading params
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_responder_shadow_send_stores_draft_and_threading_params(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_2", "customFields": [], "companyName": "Beta Corp"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "interested", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "wants a demo",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(
+        text="Great to hear! Here's a link to book a call.",
+        requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    # interested has auto_send=False in _stub_config_full → shadow_send
+    with pytest.raises(NotImplementedError):
+        process_reply(cfg, _payload_full(mid="m_sh", email_stats_id="es_sh"))
+    # NO Smartlead send
+    sl_instance.send_reply_in_thread.assert_not_called()
+    # Must have TWO update_contact calls after the soft lock:
+    # 1) soft lock acquisition (cf_lock)
+    # 2) store_draft (token + text + created_at)
+    # 3) threading params (pending_reply_message_id + pending_reply_email_stats_id)
+    all_calls = ghl_mock.update_contact.call_args_list
+    # Find the store_draft call (has cf_tok)
+    draft_call = next(
+        (c for c in all_calls if "cf_tok" in (c[1].get("custom_fields") or {})),
+        None,
+    )
+    assert draft_call is not None, "store_draft update_contact not found"
+    # Find the threading-params call (has cf_rmid)
+    threading_call = next(
+        (c for c in all_calls if "cf_rmid" in (c[1].get("custom_fields") or {})),
+        None,
+    )
+    assert threading_call is not None, "threading-params update_contact not found"
+    assert threading_call[1]["custom_fields"]["cf_rmid"] == "m_sh"
+    assert threading_call[1]["custom_fields"]["cf_resid"] == "es_sh"
+
+
+# ---------------------------------------------------------------------------
+# §7.3 #16 — booking-link placeholder forces shadow even when auto_send=True
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_booking_link_placeholder_forces_shadow(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_ph", "customFields": [], "companyName": "Gamma Inc"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    # wrong_person has auto_send=True in _stub_config_full; but booking link is PLACEHOLDER
+    mock_classify.return_value = {
+        "classification": "wrong_person", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "redirected",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    # requires_shadow=True signals that placeholder triggered shadow
+    mock_gen_response.return_value = ResponderResult(
+        text="Who handles facilities at Gamma Inc?",
+        requires_shadow=True, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    cfg.business_context.booking_link = "https://x/PLACEHOLDER"
+    with pytest.raises(NotImplementedError):
+        process_reply(cfg, _payload_full(mid="m_ph"))
+    # Forced to shadow_send → no Smartlead send
+    sl_instance.send_reply_in_thread.assert_not_called()
+    # Draft stored
+    all_calls = ghl_mock.update_contact.call_args_list
+    draft_call = next(
+        (c for c in all_calls if "cf_tok" in (c[1].get("custom_fields") or {})),
+        None,
+    )
+    assert draft_call is not None, "store_draft update_contact not found even though placeholder forced shadow"
+
+
+# ---------------------------------------------------------------------------
+# §7.3 #9 — Smartlead send failure → deferred_for_retry 503, no mark_complete
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_responder_send_failure_defers_dedupe_complete(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_sf", "customFields": [], "companyName": "Delta LLC"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "wrong_person", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "redirected",
+    }
+    sl_instance = MagicMock()
+    from reply_router.smartlead_client import SmartleadError
+    sl_instance.send_reply_in_thread.side_effect = SmartleadError("502 bad gateway")
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(
+        text="Who should I speak with?", requires_shadow=False, failed=False,
+    )
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    result = process_reply(cfg, _payload_full(mid="m_sf"))
+    # Must RETURN (not raise)
+    assert result.status == "deferred_for_retry"
+    assert result.http_status == 503
+    # No rolling-list write (last_processed_smartlead_message_ids not written)
+    for c in ghl_mock.update_contact.call_args_list:
+        cf = c[1].get("custom_fields") or {}
+        assert "cf_roll" not in cf, "rolling-list (mark_complete) should NOT be written on send failure"
+
+
+# ---------------------------------------------------------------------------
+# §7.3 #9b — responder generate failure → deferred_for_retry 503
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_responder_generate_failure_defers_dedupe_complete(mock_build, mock_classify, mock_sl_cls, mock_gen_response, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake-sl-key")
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_gf", "customFields": [], "companyName": "Epsilon Co"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "wrong_person", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "redirected",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen_response.return_value = ResponderResult(text="", failed=True)
+    cfg = _stub_config_full()
+    cfg.smartlead.api_key_env = "TEST_SL_API_KEY"
+    result = process_reply(cfg, _payload_full(mid="m_gf"))
+    # Must RETURN (not raise)
+    assert result.status == "deferred_for_retry"
+    assert result.http_status == 503
+    # No Smartlead send attempted
+    sl_instance.send_reply_in_thread.assert_not_called()

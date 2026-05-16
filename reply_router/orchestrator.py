@@ -13,12 +13,14 @@ from datetime import datetime, timezone
 from email.utils import parseaddr
 from typing import Any, Literal
 
+from reply_router.approvals import generate_token, store_draft
 from reply_router.classifier import classify
 from reply_router.dedupe import check_rolling, check_soft_lock, acquire_soft_lock, SoftLockState
 from reply_router.ghl_client import GHLClient, MultiContactResolution
-from reply_router.responder import requires_shadow
+from reply_router.responder import generate_contextual, generate_template, requires_shadow
 from reply_router.routing import route
 from reply_router.slack_client import post_urgent
+from reply_router.smartlead_client import SmartleadClient, SmartleadError
 
 logger = logging.getLogger(__name__)
 
@@ -225,8 +227,88 @@ def process_reply(
                     notes=[f"GHL DNC failed after retries: {exc}"],
                 )
 
-    # Rest of pipeline (responder, send/shadow, mark_complete) lands in 4.1e-g.
-    raise NotImplementedError("rest of pipeline lands in Tasks 4.1e–4.1g")
+    # If action_bundle is None (unknown classification), defer to 4.1g's _handle_unknown.
+    # For now raise NotImplementedError as the handoff marker.
+    if action_bundle is None:
+        raise NotImplementedError("unknown classification handling lands in Task 4.1g")
+
+    # §4.1 step 13b — generate response
+    responder_result = _generate_response(
+        classification=classification,
+        payload=payload,
+        contact=contact,
+        client_config=client_config,
+    )
+
+    if responder_result.failed:
+        # §7.3 #9b / 9c — defer dedupe complete (don't mark), return 5xx for retry
+        return ProcessResult(
+            status="deferred_for_retry",
+            http_status=503,
+            classification=classification,
+            notes=["responder failed — soft lock will time out in 10min, retry via Smartlead or reconciler"],
+        )
+
+    # §4.1 step 13c — effective send mode (booking-link sentinel + responder shadow can both force shadow)
+    effective_send_mode = action_bundle.send_mode
+    if responder_result.requires_shadow:
+        effective_send_mode = "shadow_send"
+
+    smartlead_api_key = os.environ.get(client_config.smartlead.api_key_env, "")
+    smartlead = SmartleadClient(api_key=smartlead_api_key) if smartlead_api_key else None
+    approval_url: str | None = None
+
+    if effective_send_mode == "auto_send":
+        if smartlead is None:
+            return ProcessResult(
+                status="deferred_for_retry", http_status=503,
+                classification=classification,
+                notes=[f"missing env var {client_config.smartlead.api_key_env}"],
+            )
+        try:
+            smartlead.send_reply_in_thread(
+                campaign_id=payload.campaign_id,
+                email_stats_id=payload.email_stats_id,
+                body=responder_result.text,
+                reply_message_id=payload.message_id,
+            )
+        except SmartleadError as exc:
+            logger.error("Smartlead send failed: %s", exc)
+            # §7.3 #9 — defer dedupe, return 5xx
+            return ProcessResult(
+                status="deferred_for_retry", http_status=503,
+                classification=classification,
+                notes=[f"Smartlead send failed: {exc}"],
+            )
+        ghl.add_note(contact["id"], f"auto-response sent: {responder_result.text}")
+    else:
+        # shadow_send: store the draft + threading params
+        token = generate_token()
+        store_draft(
+            ghl, contact["id"],
+            token_field_id=fids["pending_draft_token"],
+            text_field_id=fids["pending_draft_text"],
+            created_at_field_id=fids["pending_draft_created_at"],
+            token=token,
+            draft_text=responder_result.text,
+        )
+        # ALSO store the Smartlead threading params on the contact so api/approvals.py
+        # can pass them to send_reply_in_thread at approve time. Without these, every
+        # approved shadow reply would fail or send non-threaded — see reviewer iteration
+        # 2 blocker #1.
+        ghl.update_contact(
+            contact["id"],
+            custom_fields={
+                fids["pending_reply_message_id"]: payload.message_id,
+                fids["pending_reply_email_stats_id"]: payload.email_stats_id,
+            },
+        )
+        approval_url = f"{_vercel_base_url()}/v1/clients/{client_config.client_id}/approvals/{token}"
+        logger.info("shadow draft stored token=%s contact=%s", token, contact["id"])
+
+    # Tasks 4.1f (unsubscribe post-send mark_unsubscribe) and 4.1g (mark_complete +
+    # _handle_unknown) and 4.1h (Slack notify + final response) land next.
+    raise NotImplementedError("post-send + mark_complete + Slack land in Tasks 4.1f-h")
 
 
 def _ghl_dnc_with_retry(ghl, contact_id: str, slack_url: str, contact: dict, payload: ReplyPayload) -> None:
@@ -258,3 +340,50 @@ def _ghl_dnc_with_retry(ghl, contact_id: str, slack_url: str, contact: dict, pay
             reply_text=payload.reply_text,
         )
     raise RuntimeError(f"GHL DNC failed after 3 retries: {last_err}")
+
+
+def _generate_response(
+    classification: str,
+    payload: ReplyPayload,
+    contact: dict,
+    client_config,
+):
+    """Dispatch to template or contextual responder based on classification."""
+    if classification == "unsubscribe":
+        return generate_template(
+            classification="unsubscribe",
+            account=_to_account(contact),
+            business_context=client_config.business_context,
+            anthropic_api_key="",  # unsubscribe is static; key not used
+        )
+    if classification in ("interested", "not_now", "wrong_person"):
+        return generate_template(
+            classification=classification,
+            account=_to_account(contact),
+            business_context=client_config.business_context,
+            anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+        )
+    if classification in ("info_request", "objection"):
+        return generate_contextual(
+            classification=classification,
+            reply_text=payload.reply_text,
+            account=_to_account(contact),
+            business_context=client_config.business_context,
+            sender_persona_name=payload.sender_persona or "the team",
+            anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+        )
+    raise ValueError(f"unsupported classification: {classification}")
+
+
+def _to_account(contact: dict) -> dict:
+    return {
+        "contact_name": contact.get("firstName") or contact.get("name") or "there",
+        "company_name": contact.get("companyName", ""),
+        "contact_title": contact.get("title", ""),
+    }
+
+
+def _vercel_base_url() -> str:
+    return os.environ.get("VERCEL_URL_OVERRIDE") or os.environ.get(
+        "VERCEL_PROJECT_PRODUCTION_URL", "https://reply-router.vercel.app"
+    )

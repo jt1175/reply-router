@@ -76,6 +76,13 @@ def test_500_on_unknown_client(app_client):
 
 
 def test_200_on_valid_secret_with_minimal_payload(app_client):
-    """Will be re-enabled in Task 4.1b once loop prevention is implemented in the
-    orchestrator. For now, skip — the orchestrator stub raises NotImplementedError."""
-    pytest.skip("orchestrator process_reply not implemented yet — re-enabled in Task 4.1b")
+    """With the correct secret, the handler proceeds past auth. The from_email IS in
+    sending_inboxes so the loop check short-circuits at the first step and returns 200."""
+    resp = app_client.post(
+        "/v1/clients/test_client/replies",
+        json={"message_id": "m1", "from_email": "sender@test.invalid",
+              "lead_email": "p@example.com", "campaign_id": "c1", "reply_text": "hi"},
+        headers={"X-Router-Secret": "supersecret"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ignored_self"

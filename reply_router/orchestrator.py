@@ -5,8 +5,12 @@ api/replies.py can import it; full behavior lands per the task sequence.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from email.utils import parseaddr
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,13 +61,43 @@ class ProcessResult:
         }
 
 
+def _normalize_email(raw: str) -> str:
+    """Spec §4.4 normalization: parse RFC 5322, lowercase, strip plus-tag, strip whitespace.
+
+    Returns "" for empty / unparseable input (so a missing from_email won't accidentally
+    match a sending inbox).
+    """
+    if not raw:
+        return ""
+    _, addr = parseaddr(raw)
+    addr = (addr or "").strip().lower()
+    if "@" not in addr:
+        return ""
+    local, domain = addr.split("@", 1)
+    if "+" in local:
+        local = local.split("+", 1)[0]
+    return f"{local}@{domain}"
+
+
+def _loop_check(from_email: str, sending_inboxes: list[str]) -> bool:
+    """Return True if from_email matches one of our sending inboxes (after normalization)."""
+    normalized_from = _normalize_email(from_email)
+    if not normalized_from:
+        return False
+    normalized_set = frozenset(_normalize_email(s) for s in sending_inboxes)
+    return normalized_from in normalized_set
+
+
 def process_reply(
     client_config,
     payload: ReplyPayload,
     source: Literal["webhook", "reconciler"] = "webhook",
 ) -> ProcessResult:
-    """Full §4.1 pipeline. Filled in across Tasks 4.1b–4.1g.
-
-    For Task 4.1a the only path implemented is the loop check (delegated to Task 4.1b).
-    """
-    raise NotImplementedError("orchestrator.process_reply filled in across Tasks 4.1b–4.1g")
+    """Full §4.1 pipeline. Filled in across Tasks 4.1b–4.1g."""
+    if _loop_check(payload.from_email, client_config.sending_inboxes):
+        logger.info(
+            "loop ignored: from=%s matches sending_inboxes (client=%s, source=%s)",
+            payload.from_email, client_config.client_id, source,
+        )
+        return ProcessResult(status="ignored_self", http_status=200)
+    raise NotImplementedError("rest of pipeline lands in Tasks 4.1c–4.1g")

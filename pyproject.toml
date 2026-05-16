@@ -15,3 +15,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -q"
+
+[tool.setuptools.packages.find]
+# Without this, setuptools' flat-layout auto-discovery sees `clients/` and `api/`
+# (both contain non-Python data — JSON configs and Vercel function entrypoints)
+# as additional top-level packages and refuses to build. Pin to the real package.
+include = ["reply_router*"]

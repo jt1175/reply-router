@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/replies.py":   { "memory": 512, "maxDuration": 30 },
+    "api/reconcile.py": { "memory": 512, "maxDuration": 60 },
+    "api/approvals.py": { "memory": 512, "maxDuration": 30 },
+    "api/health.py":    { "memory": 256, "maxDuration": 10 }
+  },
+  "rewrites": [
+    { "source": "/v1/clients/:client_id/replies",                       "destination": "/api/replies" },
+    { "source": "/v1/clients/:client_id/approvals/:token",              "destination": "/api/approvals" },
+    { "source": "/v1/clients/:client_id/approvals/:token/send",         "destination": "/api/approvals" },
+    { "source": "/v1/clients/:client_id/approvals/:token/discard",      "destination": "/api/approvals" },
+    { "source": "/v1/health",                                           "destination": "/api/health" }
+  ],
+  "crons": [
+    {
+      "path": "/api/reconcile",
+      "schedule": "0 7 * * *"
+    }
+  ]
+}

@@ -49,3 +49,81 @@ def test_get_contact_by_email_network_error_raises(client):
     )
     with pytest.raises(RuntimeError, match="GHL contact lookup failed"):
         client.get_contacts_by_email("prospect@example.com")
+
+
+@responses.activate
+def test_update_custom_fields_patches_contact(client):
+    responses.add(
+        responses.PUT,
+        f"{GHL_BASE}/contacts/ct_1",
+        json={"contact": {"id": "ct_1"}},
+        status=200,
+    )
+    client.update_contact(
+        contact_id="ct_1",
+        custom_fields={"cf_1": "interested", "cf_2": "2026-05-15"},
+    )
+    call = responses.calls[0]
+    body = call.request.body
+    # Just verify the call was made; payload shape gets tested via integration
+    assert b"ct_1" not in body  # path-based, not body
+    # GHL expects customFields as an array of {id, value} pairs
+    import json
+    parsed = json.loads(body)
+    assert "customFields" in parsed
+    field_map = {cf["id"]: cf["value"] for cf in parsed["customFields"]}
+    assert field_map == {"cf_1": "interested", "cf_2": "2026-05-15"}
+
+
+@responses.activate
+def test_add_tags_calls_tags_endpoint(client):
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts/ct_1/tags",
+        json={"tags": ["replied", "interested"]},
+        status=200,
+    )
+    client.add_tags(contact_id="ct_1", tags=["replied", "interested"])
+    assert responses.calls[0].request.body is not None
+
+
+@responses.activate
+def test_add_note(client):
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts/ct_1/notes",
+        json={"note": {"id": "n_1"}},
+        status=201,
+    )
+    client.add_note(contact_id="ct_1", body="Auto-response sent")
+
+
+@responses.activate
+def test_move_to_pipeline_stage(client):
+    responses.add(
+        responses.PUT,
+        f"{GHL_BASE}/opportunities/op_1",
+        json={"opportunity": {"id": "op_1"}},
+        status=200,
+    )
+    # Pipeline-stage moves go via opportunities API; this assumes the contact
+    # already has an opportunity. Implementation finds/creates it.
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/opportunities/search",
+        json={"opportunities": [{"id": "op_1"}]},
+        status=200,
+    )
+    client.move_to_pipeline_stage(
+        contact_id="ct_1", pipeline_id="pipe_abc", stage_id="s2"
+    )
+
+
+@responses.activate
+def test_add_to_dnc(client):
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts/ct_1/dnd",
+        status=200,
+    )
+    client.add_to_dnc(contact_id="ct_1")

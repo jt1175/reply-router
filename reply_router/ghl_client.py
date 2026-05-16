@@ -229,6 +229,30 @@ class GHLClient:
         )
         return sorted_by_date[0], MultiContactResolution.AMBIGUOUS
 
+    def list_contacts_with_field(self, field_id: str) -> list[dict[str, Any]]:
+        """List contacts that have ANY non-empty value for the given custom field.
+
+        Used by reconciler phases 1 (find stuck soft locks) and 3 (find expired tokens).
+        GHL doesn't have a documented "field is set" filter — we fall back to listing
+        contacts by tag. The orchestrator tags contacts with `pending_draft` when
+        storing a draft (Task 4.1e), so phase 3 uses that tag. For phase 1 (soft lock)
+        there's no equivalent tag — phase 1 must fall back to scanning recently-modified
+        contacts, which is a v1.1 optimization. For now this method returns [] and
+        phase 1 logs a warning that it's unsupported until JT confirms the right
+        GHL search approach.
+
+        For v1: returns [] (no-op). Reconciler phases handle the empty list gracefully.
+        TODO before launch: verify GHL search-by-customField-presence API and implement.
+        """
+        # TODO: implement against actual GHL search API. Stubbed to [] so reconciler
+        # phases can be unit-tested with mocked GHLClient and don't crash in production
+        # against a missing capability.
+        logger.warning(
+            "list_contacts_with_field is stubbed (returns []) — see Task 4.2 TODO. "
+            "field_id=%s", field_id,
+        )
+        return []
+
     def search_contacts_by_custom_field(
         self, field_id: str, value: str, unique: bool = False
     ) -> list[dict[str, Any]]:

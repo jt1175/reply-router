@@ -243,3 +243,8 @@ def test_search_contacts_by_custom_field_multi_match_raises(client):
     )
     with pytest.raises(RuntimeError, match="multiple contacts.*same token"):
         client.search_contacts_by_custom_field("cf_token", "abc123", unique=True)
+
+
+def test_list_contacts_with_field_is_stub_returns_empty(client):
+    """v1 stub returns empty list with warning. Real implementation lands before launch."""
+    assert client.list_contacts_with_field("cf_some_field") == []

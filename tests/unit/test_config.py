@@ -112,3 +112,19 @@ def test_duplicate_client_id_across_files_raises(tmp_path):
     (tmp_path / "b.json").write_text(json.dumps(cfg))
     with pytest.raises(ConfigError, match="duplicate client_id"):
         load_and_validate_all(tmp_path)
+
+
+def test_underscore_doc_keys_in_classification_actions_are_stripped(tmp_path):
+    # Spec §8.1 puts _doc_schema and per-entry _doc keys inside classification_actions
+    # as inline documentation. The loader must accept them without complaint.
+    cfg = _minimal_valid_config()
+    cfg["classification_actions"]["_doc_schema"] = "inline schema docstring per spec §8.1"
+    cfg["classification_actions"]["unsubscribe"]["_doc"] = "inline action docstring per spec §8.1"
+    cfg_file = tmp_path / "test.json"
+    cfg_file.write_text(json.dumps(cfg))
+    loaded = load_client_config(cfg_file)
+    # _doc_schema sibling is stripped, so only the 6 real classifications remain
+    assert set(loaded.classification_actions.keys()) == {
+        "unsubscribe", "wrong_person", "interested",
+        "not_now", "info_request", "objection",
+    }

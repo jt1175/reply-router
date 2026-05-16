@@ -98,18 +98,26 @@ class ClientConfig(BaseModel):
     # Allow underscore-prefixed _doc_* and _pending_domains keys
     model_config = {"extra": "allow"}
 
+    @field_validator("classification_actions", mode="before")
+    @classmethod
+    def _strip_doc_keys(cls, v):
+        # Spec §8.1 places `_doc_schema` and `_doc` keys inside classification_actions
+        # as inline documentation. Strip them here, BEFORE pydantic coerces values
+        # to ClassificationAction — a string docstring can't coerce to the model.
+        if isinstance(v, dict):
+            return {k: val for k, val in v.items() if not k.startswith("_")}
+        return v
+
     @field_validator("classification_actions")
     @classmethod
     def _all_classifications_present(cls, v: dict) -> dict:
         unknown = set(v.keys()) - ALLOWED_CLASSIFICATIONS
-        # Filter out underscore-prefixed schema-doc keys
-        unknown = {k for k in unknown if not k.startswith("_")}
         if unknown:
             raise ValueError(
                 f"classification_actions has unknown classification keys: {sorted(unknown)}. "
                 f"Allowed: {sorted(ALLOWED_CLASSIFICATIONS)}"
             )
-        missing = ALLOWED_CLASSIFICATIONS - {k for k in v.keys() if not k.startswith("_")}
+        missing = ALLOWED_CLASSIFICATIONS - v.keys()
         if missing:
             raise ValueError(
                 f"classification_actions missing required keys: {sorted(missing)}"

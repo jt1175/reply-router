@@ -202,3 +202,44 @@ def test_resolve_contact_multi_match_ambiguous_picks_most_recent(client):
     contact, resolution = client.resolve_contact_by_email("p@x.com")
     assert contact["id"] == "ct_b"
     assert resolution == MultiContactResolution.AMBIGUOUS
+
+
+@responses.activate
+def test_search_contacts_by_custom_field_returns_match(client):
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": [{"id": "ct_token", "customFields": [{"id": "cf_token", "value": "abc123"}]}]},
+        status=200,
+    )
+    result = client.search_contacts_by_custom_field("cf_token", "abc123")
+    assert len(result) == 1
+    assert result[0]["id"] == "ct_token"
+
+
+@responses.activate
+def test_search_contacts_by_custom_field_no_match_returns_empty(client):
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": []},
+        status=200,
+    )
+    assert client.search_contacts_by_custom_field("cf_token", "nonesuch") == []
+
+
+@responses.activate
+def test_search_contacts_by_custom_field_multi_match_raises(client):
+    """Tokens are meant to be unique. If GHL returns >1, something's wrong with our token-gen
+    or there's a stale duplicate — caller should investigate, not silently pick one."""
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": [
+            {"id": "ct_a", "customFields": [{"id": "cf_token", "value": "abc123"}]},
+            {"id": "ct_b", "customFields": [{"id": "cf_token", "value": "abc123"}]},
+        ]},
+        status=200,
+    )
+    with pytest.raises(RuntimeError, match="multiple contacts.*same token"):
+        client.search_contacts_by_custom_field("cf_token", "abc123", unique=True)

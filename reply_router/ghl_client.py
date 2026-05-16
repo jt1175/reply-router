@@ -228,3 +228,43 @@ class GHLClient:
             email, len(contacts),
         )
         return sorted_by_date[0], MultiContactResolution.AMBIGUOUS
+
+    def search_contacts_by_custom_field(
+        self, field_id: str, value: str, unique: bool = False
+    ) -> list[dict[str, Any]]:
+        """Search contacts where customField[field_id] == value.
+
+        Used primarily by the approval handler (spec §4.3 step 1) to find the contact
+        whose pending_draft_token matches a given URL token.
+
+        Args:
+            field_id: the GHL custom-field id to filter on
+            value:    the value to match
+            unique:   if True and >1 contact matches, raise RuntimeError. Use for token lookups
+                      where multiple matches indicates a duplicate-token bug.
+
+        Returns: list of contact dicts (each includes its customFields array). Empty if no match.
+        """
+        url = f"{GHL_BASE_URL}/contacts/search"
+        # GHL's customField filter accepts {"field": "<id>", "operator": "eq", "value": "<v>"}
+        # in the JSON body for POST-style searches; for v1 GET search we use a query param.
+        params = {
+            "locationId": self.sub_account_id,
+            f"customField.{field_id}": value,
+        }
+        try:
+            resp = requests.get(url, headers=self._headers(), params=params, timeout=10)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"GHL search_contacts_by_custom_field failed: {exc}") from exc
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"GHL search_contacts_by_custom_field failed: status={resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+        contacts = resp.json().get("contacts", [])
+        if unique and len(contacts) > 1:
+            raise RuntimeError(
+                f"GHL search_contacts_by_custom_field returned multiple contacts with the same token "
+                f"value for field_id={field_id} (got {len(contacts)})"
+            )
+        return contacts

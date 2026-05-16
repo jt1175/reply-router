@@ -700,3 +700,168 @@ def test_responder_generate_failure_defers_dedupe_complete(mock_build, mock_clas
     assert result.http_status == 503
     # No Smartlead send attempted
     sl_instance.send_reply_in_thread.assert_not_called()
+
+
+# ===========================================================================
+# §4.1 step 13d tests (Task 4.1f) — mark_unsubscribe post-send + URGENT alert
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# §7.3 #1 — unsubscribe full path: correct call ordering
+# ghl.add_to_dnc → smartlead.send_reply_in_thread → smartlead.mark_unsubscribe
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_unsubscribe_full_path_correct_ordering(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    call_order = []
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_1", "customFields": [], "companyName": "Acme"},
+        MultiContactResolution.SINGLE,
+    )
+    ghl_mock.add_to_dnc.side_effect = lambda *a, **k: call_order.append("dnc")
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unsubscribe", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "explicit",
+    }
+    sl_instance = MagicMock()
+    sl_instance.send_reply_in_thread.side_effect = lambda *a, **k: call_order.append("send")
+    sl_instance.mark_unsubscribe.side_effect = lambda *a, **k: call_order.append("unsub")
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Removed you from our list. Sorry for the interruption.",
+        requires_shadow=False, failed=False,
+    )
+    with pytest.raises(NotImplementedError):
+        process_reply(_stub_config_full(), _payload(mid="m_unsub"))
+    assert call_order == ["dnc", "send", "unsub"], f"wrong order: {call_order}"
+
+
+# ---------------------------------------------------------------------------
+# §7.3 #4 — mark_unsubscribe fails 3× → URGENT Slack alert → raises NotImplementedError
+# (post-send block does NOT 5xx — reply already sent)
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_urgent")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_smartlead_mark_unsubscribe_failure_escalates(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_unsub_fail", "customFields": [], "companyName": "Acme"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unsubscribe", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "explicit",
+    }
+    from reply_router.smartlead_client import SmartleadError
+    sl_instance = MagicMock()
+    sl_instance.mark_unsubscribe.side_effect = SmartleadError("502")
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Removed you from our list. Sorry for the interruption.",
+        requires_shadow=False, failed=False,
+    )
+    # Must raise NotImplementedError (not return 503 — reply already sent)
+    with pytest.raises(NotImplementedError):
+        process_reply(_stub_config_full(), _payload(mid="m_unsub_fail"))
+    # All 3 retries attempted
+    assert sl_instance.mark_unsubscribe.call_count == 3
+    # URGENT Slack alert fired once with correct title
+    mock_post.assert_called_once()
+    assert mock_post.call_args[1]["title"] == "GHL DNC done but Smartlead may keep sending"
+
+
+# ---------------------------------------------------------------------------
+# Successful unsubscribe → mark_unsubscribe succeeds → post_urgent NOT called
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator.post_urgent")
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_normal_confidence_unsubscribe_does_not_trigger_slack(mock_build, mock_classify, mock_sl_cls, mock_gen, mock_post, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_unsub_ok", "customFields": [], "companyName": "Acme"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "unsubscribe", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "explicit",
+    }
+    sl_instance = MagicMock()
+    sl_instance.mark_unsubscribe.return_value = None  # success
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Removed you from our list. Sorry for the interruption.",
+        requires_shadow=False, failed=False,
+    )
+    with pytest.raises(NotImplementedError):
+        process_reply(_stub_config_full(), _payload(mid="m_unsub_ok"))
+    # mark_unsubscribe succeeded → no URGENT alert
+    mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Non-unsubscribe classification → mark_unsubscribe never called
+# ---------------------------------------------------------------------------
+
+@patch("reply_router.orchestrator._generate_response")
+@patch("reply_router.orchestrator.SmartleadClient")
+@patch("reply_router.orchestrator.classify")
+@patch("reply_router.orchestrator._build_ghl_client")
+def test_smartlead_mark_unsubscribe_not_called_for_non_unsubscribe(mock_build, mock_classify, mock_sl_cls, mock_gen, monkeypatch):
+    monkeypatch.setenv("TEST_GHL_API_KEY", "fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SL_API_KEY", "fake")
+    monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
+
+    ghl_mock = MagicMock()
+    ghl_mock.resolve_contact_by_email.return_value = (
+        {"id": "ct_wp", "customFields": [], "companyName": "Acme"},
+        MultiContactResolution.SINGLE,
+    )
+    mock_build.return_value = ghl_mock
+    mock_classify.return_value = {
+        "classification": "wrong_person", "confidence": "high",
+        "suggested_followup_date_iso": None, "reasoning": "redirected",
+    }
+    sl_instance = MagicMock()
+    mock_sl_cls.return_value = sl_instance
+    from reply_router.responder import ResponderResult
+    mock_gen.return_value = ResponderResult(
+        text="Who should I speak with?",
+        requires_shadow=False, failed=False,
+    )
+    with pytest.raises(NotImplementedError):
+        process_reply(_stub_config_full(), _payload(mid="m_wp"))
+    sl_instance.mark_unsubscribe.assert_not_called()

@@ -306,9 +306,19 @@ def process_reply(
         approval_url = f"{_vercel_base_url()}/v1/clients/{client_config.client_id}/approvals/{token}"
         logger.info("shadow draft stored token=%s contact=%s", token, contact["id"])
 
-    # Tasks 4.1f (unsubscribe post-send mark_unsubscribe) and 4.1g (mark_complete +
-    # _handle_unknown) and 4.1h (Slack notify + final response) land next.
-    raise NotImplementedError("post-send + mark_complete + Slack land in Tasks 4.1f-h")
+    # §4.1 step 13d — unsubscribe-only post-send: tell Smartlead to drop the lead
+    # so future campaign emails don't get sent. Failures here do NOT 5xx the response
+    # (the prospect already got the "removed you" reply; what failed is internal
+    # bookkeeping). The URGENT Slack alert IS the recovery path — see §7.3 #4.
+    unsub_failed = False
+    if classification == "unsubscribe":
+        slack_url = os.environ.get(client_config.slack.incoming_webhook_url_env, "")
+        unsub_failed = not _smartlead_unsub_with_retry(
+            smartlead, payload, contact, slack_url
+        )
+
+    # Tasks 4.1g (mark_complete + _handle_unknown) and 4.1h (Slack notify + final response).
+    raise NotImplementedError("mark_complete + Slack land in Tasks 4.1g-h")
 
 
 def _ghl_dnc_with_retry(ghl, contact_id: str, slack_url: str, contact: dict, payload: ReplyPayload) -> None:
@@ -387,3 +397,48 @@ def _vercel_base_url() -> str:
     return os.environ.get("VERCEL_URL_OVERRIDE") or os.environ.get(
         "VERCEL_PROJECT_PRODUCTION_URL", "https://reply-router.vercel.app"
     )
+
+
+def _smartlead_unsub_with_retry(
+    smartlead,
+    payload: ReplyPayload,
+    contact: dict,
+    slack_url: str,
+) -> bool:
+    """Returns True on success, False after all retries fail (Slack alerted).
+
+    Per §7.3 #4: dedupe IS marked complete regardless (the URGENT Slack alert is the
+    recovery path; we do NOT 5xx because that would make Smartlead retry the whole
+    webhook including re-sending the 'removed you' reply, which already went out).
+    """
+    if smartlead is None:
+        return True
+    last_err = None
+    for attempt in range(3):
+        try:
+            smartlead.mark_unsubscribe(
+                campaign_id=payload.campaign_id,
+                lead_id=contact.get("id"),
+            )
+            return True
+        except SmartleadError as exc:
+            last_err = exc
+            logger.warning(
+                "Smartlead mark_unsubscribe failed attempt=%d err=%s", attempt + 1, exc
+            )
+            _time.sleep(0.5 * (attempt + 1))
+    if slack_url:
+        post_urgent(
+            slack_url,
+            title="GHL DNC done but Smartlead may keep sending",
+            action_required=(
+                f"GHL DNC has been set for {payload.lead_email}, and the 'removed you' reply "
+                f"was sent. But Smartlead `mark_unsubscribe` failed after 3 retries.\n\n"
+                f"1. Open Smartlead campaign {payload.campaign_id}\n"
+                f"2. Find lead {payload.lead_email} and manually click Unsubscribe\n"
+                f"3. Reply ✅ when done"
+            ),
+            reply_text=payload.reply_text,
+        )
+    logger.error("Smartlead mark_unsubscribe failed after 3 retries: %s", last_err)
+    return False

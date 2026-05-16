@@ -1,0 +1,76 @@
+{
+  "_doc_status": "Sandbox config for smoke tests against test GHL/Smartlead/Slack tenants. Underscore-prefixed filename is SKIPPED by reply_router.config.load_and_validate_all (CI does not validate this) — tests load it explicitly. Env vars (TEST_*) come from each developer's local .env or CI secrets.",
+
+  "client_id": "test_sandbox",
+  "client_display_name": "Test Sandbox",
+
+  "ghl": {
+    "sub_account_id": "test_loc_id",
+    "api_key_env": "TEST_GHL_API_KEY",
+    "pipeline_id": "test_pipeline_id",
+    "custom_field_ids": {
+      "reply_classification": "test_cf_reply_classification",
+      "reply_received_at": "test_cf_reply_received_at",
+      "contract_end_date": "test_cf_contract_end_date",
+      "nurture_bucket": "test_cf_nurture_bucket",
+      "last_processed_smartlead_message_ids": "test_cf_last_processed_smartlead_message_ids",
+      "currently_processing_smartlead_message_id": "test_cf_currently_processing_smartlead_message_id",
+      "pending_draft_token": "test_cf_pending_draft_token",
+      "pending_draft_text": "test_cf_pending_draft_text",
+      "pending_draft_created_at": "test_cf_pending_draft_created_at",
+      "pending_reply_message_id": "test_cf_pending_reply_message_id",
+      "pending_reply_email_stats_id": "test_cf_pending_reply_email_stats_id"
+    }
+  },
+
+  "smartlead": {
+    "api_key_env": "TEST_SMARTLEAD_API_KEY",
+    "campaign_ids": ["test_campaign_id"]
+  },
+
+  "slack": {
+    "incoming_webhook_url_env": "TEST_SLACK_WEBHOOK_URL"
+  },
+
+  "auth": {
+    "router_secret_env": "TEST_ROUTER_SECRET"
+  },
+
+  "sending_inboxes": ["sandbox.tester@example.com"],
+
+  "monitoring_until": "2099-12-31",
+
+  "classification_actions": {
+    "unsubscribe":  { "auto_send": true,  "min_confidence": "low",    "slack_notify": false, "pipeline_stage_id": "test_stage_closed_lost" },
+    "wrong_person": { "auto_send": true,  "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "test_stage_nurture" },
+    "interested":   { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "test_stage_new_reply" },
+    "not_now":      { "auto_send": false, "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "test_stage_nurture", "nurture_bucket": "not_now" },
+    "info_request": { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "test_stage_new_reply" },
+    "objection":    { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "test_stage_new_reply" }
+  },
+
+  "business_context": {
+    "company_name": "Test Sandbox Co",
+    "company_full_name": "Test Sandbox Co LLC",
+    "tagline": "Sandbox tagline for testing",
+    "phone": "+1-555-0100",
+    "email": "sandbox@example.com",
+    "address": "123 Test St, Testville, MN 55401",
+    "website": "https://example.com",
+    "service_area": "Sandbox metro area",
+    "services_offered": ["sandbox cleaning service A", "sandbox cleaning service B"],
+    "services_not_offered": ["sandbox excluded service"],
+    "value_props": ["sandbox value prop for testing"],
+    "pricing_response": "Pricing depends on the space — happy to scope it on a walkthrough.",
+    "scheduling_info": "Sandbox scheduling info.",
+    "sales_process": "Sandbox sales process.",
+    "common_objections": {
+      "already_have_vendor": "Sandbox already-have-vendor response.",
+      "send_pricing_first": "Sandbox send-pricing-first response."
+    },
+    "booking_link": "https://example.com/test-booking",
+    "credential_mentions": {
+      "insurance": "Sandbox insurance blurb."
+    }
+  }
+}

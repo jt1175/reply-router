@@ -1,0 +1,128 @@
+{
+  "_doc_status": "SKELETON written 2026-05-16. Items marked TBD_* must be filled in by JT before Task 5.2 live verification. Schema validates with these placeholders but live integration will 4xx until real values are populated. See docs/superpowers/plans/2026-05-15-reply-router-implementation.md Prerequisites table.",
+
+  "client_id": "clear_facility",
+  "client_display_name": "Clear Facility Services",
+
+  "ghl": {
+    "sub_account_id": "TBD_GHL_LOCATION_ID",
+    "api_key_env": "CFS_GHL_API_KEY",
+    "pipeline_id": "TBD_GHL_PIPELINE_ID",
+    "custom_field_ids": {
+      "reply_classification": "TBD_GHL_CF_reply_classification",
+      "reply_received_at": "TBD_GHL_CF_reply_received_at",
+      "contract_end_date": "TBD_GHL_CF_contract_end_date",
+      "nurture_bucket": "TBD_GHL_CF_nurture_bucket",
+      "last_processed_smartlead_message_ids": "TBD_GHL_CF_last_processed_smartlead_message_ids_LARGE_TEXT_5000_PLUS_CHARS",
+      "currently_processing_smartlead_message_id": "TBD_GHL_CF_currently_processing_smartlead_message_id",
+      "pending_draft_token": "TBD_GHL_CF_pending_draft_token",
+      "pending_draft_text": "TBD_GHL_CF_pending_draft_text",
+      "pending_draft_created_at": "TBD_GHL_CF_pending_draft_created_at",
+      "pending_reply_message_id": "TBD_GHL_CF_pending_reply_message_id",
+      "pending_reply_email_stats_id": "TBD_GHL_CF_pending_reply_email_stats_id"
+    }
+  },
+
+  "smartlead": {
+    "api_key_env": "CFS_SMARTLEAD_API_KEY",
+    "campaign_ids": ["TBD_SMARTLEAD_CAMPAIGN_ID_PRIMARY"]
+  },
+
+  "slack": {
+    "incoming_webhook_url_env": "CFS_SLACK_WEBHOOK_URL"
+  },
+
+  "auth": {
+    "router_secret_env": "CFS_ROUTER_SECRET"
+  },
+
+  "sending_inboxes": [
+    "sarah.jones@clearfacilitymn.com",
+    "mike.brooks@clearfacilitymn.com",
+    "jessica.martin@clearfacilitymn.com",
+    "sarah.jones@tryclearfacilityservices.com",
+    "mike.brooks@tryclearfacilityservices.com",
+    "jessica.martin@tryclearfacilityservices.com",
+    "sarah.jones@getclearfacilityservices.com",
+    "mike.brooks@getclearfacilityservices.com",
+    "jessica.martin@getclearfacilityservices.com",
+    "sarah.jones@mnclearfacility.com",
+    "mike.brooks@mnclearfacility.com",
+    "jessica.martin@mnclearfacility.com"
+  ],
+  "_pending_domains": ["TBD_5th_CFS_domain_in_flight_as_of_2026-05-15_add_3_inboxes_when_purchased"],
+  "_sending_inboxes_doc": "SINGLE SOURCE OF TRUTH for loop prevention. Update BEFORE connecting any new inbox to Smartlead. See docs/superpowers/specs/2026-05-15-reply-router-design.md §9.1.",
+
+  "monitoring_until": "2026-06-30",
+
+  "classification_actions": {
+    "_doc_schema": "Per-classification routing. Tags are NOT configurable here — they are hard-coded in routing.py by design (always 'replied' + classification name + conditional 'low_confidence'/'ambiguous_contact_match'/'auto_created_from_reply'). Adding new tag logic requires a code change, not a config change. The 'unsubscribe' entry's auto_send and min_confidence values are present for schema consistency but are IGNORED at runtime — see §5.4 carve-out (unsubscribe always honors regardless of confidence).",
+    "unsubscribe":  { "auto_send": true,  "min_confidence": "low",    "slack_notify": false, "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_closed_lost",  "_doc": "Static template. CAN-SPAM: bypasses confidence gate. See §5.4." },
+    "wrong_person": { "auto_send": true,  "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_nurture",      "_doc": "Light Claude personalization." },
+    "interested":   { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_new_reply",    "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews. See §5.3." },
+    "not_now":      { "auto_send": false, "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_nurture",      "nurture_bucket": "not_now", "_doc": "Date extraction populates contract_end_date when parseable." },
+    "info_request": { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_new_reply",    "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews." },
+    "objection":    { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_new_reply",    "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews." }
+  },
+
+  "business_context": {
+    "_doc_status": "Shawn-supplied content. Many fields are TBD until JT confirms specific marketing copy with Shawn. Skeleton uses derivable values from CFS engagement memory + intent-signal-engine config. Booking link is intentionally a PLACEHOLDER sentinel; orchestrator detects 'PLACEHOLDER' substring (case-insensitive) and forces shadow_send for interested/info_request/objection until JT provisions the real GHL calendar URL.",
+
+    "company_name": "Clear Facility Services",
+    "company_full_name": "Clear Facility Services LLC",
+    "tagline": "TBD_CFS_TAGLINE_confirm_with_Shawn",
+    "phone": "TBD_CFS_PHONE_confirm_with_Shawn",
+    "email": "TBD_CFS_INBOUND_EMAIL_confirm_with_Shawn",
+    "address": "TBD_CFS_BUSINESS_ADDRESS_confirm_with_Shawn",
+    "website": "TBD_CFS_WEBSITE_confirm_with_Shawn",
+    "service_area": "Minneapolis-St. Paul metro, 45-minute radius from downtown Minneapolis or downtown St. Paul",
+
+    "services_offered": [
+      "TBD_confirm_with_Shawn — likely includes: commercial office cleaning (nightly/weekly), warehouse + logistics facility cleaning, day porter service, post-construction cleanup, floor care (strip/wax/burnish), carpet extraction, window cleaning (interior), restroom sanitation programs, medical office cleaning"
+    ],
+    "services_not_offered": [
+      "restaurant cleaning",
+      "hotel / motel / hospitality cleaning",
+      "retail store cleaning",
+      "car dealership cleaning",
+      "bowling alley cleaning",
+      "wedding venue / event venue cleaning",
+      "bar / nightclub cleaning",
+      "residential / home cleaning",
+      "construction debris hauling",
+      "biohazard / crime scene cleanup",
+      "exterior pressure washing",
+      "snow / ice removal",
+      "landscaping or grounds maintenance"
+    ],
+
+    "value_props": [
+      "TBD_confirm_with_Shawn — common framings: specialized equipment (auto-scrubbers for hard-floor properties), local Twin Cities owner-operator (not a national chain), 50%+ margin discipline keeps quality high (won't race to the bottom on price), responsiveness within the 45-min metro radius, route-density pricing for clusters of properties"
+    ],
+
+    "pricing_response": "TBD_confirm_with_Shawn_EXACT_WORDING — must NEVER quote $ amounts. Suggested baseline: 'Pricing depends on square footage, frequency, and what kind of facility you're running — happy to put a number together after a quick 10-minute walkthrough so I can see the space.'",
+
+    "scheduling_info": "TBD_confirm_with_Shawn — typical answer: 'We schedule walkthroughs within the week, usually mornings or after-hours so we don't disrupt your team.'",
+
+    "sales_process": "TBD_confirm_with_Shawn — typical answer: '10-min discovery call → 30-min on-site walkthrough → written proposal within 48 hours → start date typically within 2 weeks of signing.'",
+
+    "common_objections": {
+      "_doc": "Pre-written response templates the contextual responder may use as-is or adapt. Add one key per objection theme Shawn hears in the wild during the shadow-mode review window.",
+      "already_have_vendor": "TBD_confirm_with_Shawn — typical: 'Totally understood — most folks we walk through with already have someone. Worth a 10-minute call just so we're on your bench if anything changes? Plenty of property managers we work with had a long-term vendor before they switched.'",
+      "send_pricing_first": "TBD_confirm_with_Shawn — typical: 'Happy to put something together, but pricing for facility cleaning really hinges on a quick walkthrough — square footage and what's actually in the space drive everything. 10 minutes on-site lets me put a real number in front of you rather than a guess.'",
+      "not_in_budget": "TBD_confirm_with_Shawn — typical: 'No problem. If anything shifts in the next quarter, would it be useful if I sent a quick check-in note in 60 days? Won't pester.'",
+      "too_busy_now": "TBD_confirm_with_Shawn — typical: 'Hear you. When does the dust settle — end of Q3 or sooner? I'll put a note on my side to circle back then.'",
+      "contract_locked_in": "TBD_confirm_with_Shawn — typical: 'When does that contract come up for renewal? Worth a walkthrough 60-90 days ahead so you have a real alternative on the table.'"
+    },
+
+    "booking_link": "https://calendar.app.google/PLACEHOLDER_REPLACE_AFTER_GHL_CALENDAR_SETUP",
+
+    "credential_mentions": {
+      "_doc": "Credential blurbs the responder may include for trust-building. Confirm with Shawn which ones are accurate + which he wants surfaced in cold-reply context.",
+      "issa": "TBD_confirm_with_Shawn — if applicable: 'ISSA-certified team' (International Sanitary Supply Association).",
+      "insurance": "TBD_confirm_with_Shawn — typical: 'Fully insured and bonded; happy to share a COI.'",
+      "background_checks": "TBD_confirm_with_Shawn — typical: 'All on-site staff background-checked and W-2 employees (not subcontracted).'",
+      "local_owner_operator": "TBD_confirm_with_Shawn — typical: 'Twin Cities owner-operator since [year]; not a franchise.'"
+    }
+  }
+}

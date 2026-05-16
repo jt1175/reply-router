@@ -165,3 +165,46 @@ def test_unsupported_classification_raises():
             business_context=_bc(),
             anthropic_api_key="k",
         )
+
+
+# --- Contextual mode unit tests (Task 3.5) ---
+
+@patch("reply_router.responder.Anthropic")
+def test_contextual_returns_text_on_happy_path(mock_anthropic_cls):
+    mock_anthropic_cls.return_value = _mock_claude(
+        "Happy to scope this on a quick walkthrough — here's a link: https://calendar.app.google/abc"
+    )
+    from reply_router.responder import generate_contextual
+    result = generate_contextual(
+        classification="info_request",
+        reply_text="how much?",
+        account={"contact_name": "X", "company_name": "Y", "contact_title": "Z"},
+        business_context=_bc(),
+        sender_persona_name="Sarah",
+        anthropic_api_key="k",
+    )
+    assert "walkthrough" in result.text.lower()
+    assert not result.failed
+
+
+@patch("reply_router.responder.Anthropic")
+def test_contextual_short_response_marked_failed(mock_anthropic_cls):
+    mock_anthropic_cls.return_value = _mock_claude("ok")
+    from reply_router.responder import generate_contextual
+    result = generate_contextual(
+        classification="info_request", reply_text="?",
+        account={"contact_name": "X", "company_name": "Y", "contact_title": "Z"},
+        business_context=_bc(), sender_persona_name="S", anthropic_api_key="k",
+    )
+    assert result.failed
+    assert result.requires_shadow
+
+
+def test_contextual_rejects_non_contextual_classification():
+    from reply_router.responder import generate_contextual
+    with pytest.raises(ValueError, match="non-contextual"):
+        generate_contextual(
+            classification="interested", reply_text="x",
+            account={}, business_context=_bc(),
+            sender_persona_name="S", anthropic_api_key="k",
+        )

@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install -e ".[dev]"
+      - name: Run unit tests
+        run: pytest tests/unit -v
+      - name: Validate client configs
+        run: |
+          python -c "from reply_router.config import load_and_validate_all; load_and_validate_all('clients')"

@@ -5,21 +5,21 @@
   "client_display_name": "Clear Facility Services",
 
   "ghl": {
-    "sub_account_id": "TBD_GHL_LOCATION_ID",
+    "sub_account_id": "fMmu5p7WaIabhwXYkdDn",
     "api_key_env": "CFS_GHL_API_KEY",
-    "pipeline_id": "TBD_GHL_PIPELINE_ID",
+    "pipeline_id": "WaNo1BZftVUmpieCPweb",
     "custom_field_ids": {
-      "reply_classification": "TBD_GHL_CF_reply_classification",
-      "reply_received_at": "TBD_GHL_CF_reply_received_at",
-      "contract_end_date": "TBD_GHL_CF_contract_end_date",
-      "nurture_bucket": "TBD_GHL_CF_nurture_bucket",
-      "last_processed_smartlead_message_ids": "TBD_GHL_CF_last_processed_smartlead_message_ids_LARGE_TEXT_5000_PLUS_CHARS",
-      "currently_processing_smartlead_message_id": "TBD_GHL_CF_currently_processing_smartlead_message_id",
-      "pending_draft_token": "TBD_GHL_CF_pending_draft_token",
-      "pending_draft_text": "TBD_GHL_CF_pending_draft_text",
-      "pending_draft_created_at": "TBD_GHL_CF_pending_draft_created_at",
-      "pending_reply_message_id": "TBD_GHL_CF_pending_reply_message_id",
-      "pending_reply_email_stats_id": "TBD_GHL_CF_pending_reply_email_stats_id"
+      "reply_classification": "SDxzzB9RlS3uBGqGiBta",
+      "reply_received_at": "ip5ANypPNq7JlpAAERVR",
+      "contract_end_date": "NFppOmCXxP8s2SlYpcAQ",
+      "nurture_bucket": "E1xdgJNZpipi5fOIYtOm",
+      "last_processed_smartlead_message_ids": "ejSGu0qCWlAqIT1t8BVI",
+      "currently_processing_smartlead_message_id": "JNJpqofVtzPa7mMPR3U2",
+      "pending_draft_token": "wAl9FaHcp52kS58mw5H9",
+      "pending_draft_text": "MpMDE3HaNtEVddnmjg0i",
+      "pending_draft_created_at": "V5qQeuNxekkPtHWFfIpi",
+      "pending_reply_message_id": "DJU3Y9Y4r8HsKot1K4As",
+      "pending_reply_email_stats_id": "JuEeNhzA34EV4ipm38mA"
     }
   },
 
@@ -57,12 +57,12 @@
 
   "classification_actions": {
     "_doc_schema": "Per-classification routing. Tags are NOT configurable here — they are hard-coded in routing.py by design (always 'replied' + classification name + conditional 'low_confidence'/'ambiguous_contact_match'/'auto_created_from_reply'). Adding new tag logic requires a code change, not a config change. The 'unsubscribe' entry's auto_send and min_confidence values are present for schema consistency but are IGNORED at runtime — see §5.4 carve-out (unsubscribe always honors regardless of confidence).",
-    "unsubscribe":  { "auto_send": true,  "min_confidence": "low",    "slack_notify": false, "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_closed_lost",  "_doc": "Static template. CAN-SPAM: bypasses confidence gate. See §5.4." },
-    "wrong_person": { "auto_send": true,  "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_nurture",      "_doc": "Light Claude personalization." },
-    "interested":   { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_new_reply",    "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews. See §5.3." },
-    "not_now":      { "auto_send": false, "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_nurture",      "nurture_bucket": "not_now", "_doc": "Date extraction populates contract_end_date when parseable." },
-    "info_request": { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_new_reply",    "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews." },
-    "objection":    { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "TBD_GHL_PIPELINE_STAGE_new_reply",    "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews." }
+    "unsubscribe":  { "auto_send": true,  "min_confidence": "low",    "slack_notify": false, "pipeline_stage_id": "35b68ea1-220f-41ef-8833-e73ef190f25a", "_doc": "Static template. CAN-SPAM: bypasses confidence gate. See §5.4." },
+    "wrong_person": { "auto_send": true,  "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "2a06ef99-0cc7-4a3a-b3f2-35202e04a582", "_doc": "Light Claude personalization." },
+    "interested":   { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "23d60f41-3a5c-45d1-bec7-3b2b2efee862", "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews. See §5.3." },
+    "not_now":      { "auto_send": false, "min_confidence": "medium", "slack_notify": true,  "pipeline_stage_id": "2a06ef99-0cc7-4a3a-b3f2-35202e04a582", "nurture_bucket": "not_now", "_doc": "Date extraction populates contract_end_date when parseable." },
+    "info_request": { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "23d60f41-3a5c-45d1-bec7-3b2b2efee862", "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews." },
+    "objection":    { "auto_send": false, "min_confidence": "high",   "slack_notify": true,  "pipeline_stage_id": "23d60f41-3a5c-45d1-bec7-3b2b2efee862", "_doc": "WEEK 4-6 OPTIMIZATION: flip auto_send true after 20-30 clean reviews." }
   },
 
   "business_context": {

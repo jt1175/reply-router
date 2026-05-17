@@ -49,9 +49,13 @@ class GHLClient:
         orchestrator can return 5xx to Smartlead for retry.
         """
         url = f"{GHL_BASE_URL}/contacts/search"
-        params = {"locationId": self.sub_account_id, "query": email}
+        body = {
+            "locationId": self.sub_account_id,
+            "pageLimit": 20,
+            "filters": [{"field": "email", "operator": "eq", "value": email}],
+        }
         try:
-            resp = requests.get(url, headers=self._headers(), params=params, timeout=10)
+            resp = requests.post(url, headers=self._headers(), json=body, timeout=10)
         except requests.RequestException as exc:
             raise RuntimeError(f"GHL contact lookup failed: {exc}") from exc
         if resp.status_code != 200:
@@ -270,14 +274,15 @@ class GHLClient:
         Returns: list of contact dicts (each includes its customFields array). Empty if no match.
         """
         url = f"{GHL_BASE_URL}/contacts/search"
-        # GHL's customField filter accepts {"field": "<id>", "operator": "eq", "value": "<v>"}
-        # in the JSON body for POST-style searches; for v1 GET search we use a query param.
-        params = {
+        body = {
             "locationId": self.sub_account_id,
-            f"customField.{field_id}": value,
+            "pageLimit": 20,
+            "filters": [
+                {"field": f"customFields.{field_id}", "operator": "eq", "value": value}
+            ],
         }
         try:
-            resp = requests.get(url, headers=self._headers(), params=params, timeout=10)
+            resp = requests.post(url, headers=self._headers(), json=body, timeout=10)
         except requests.RequestException as exc:
             raise RuntimeError(f"GHL search_contacts_by_custom_field failed: {exc}") from exc
         if resp.status_code != 200:

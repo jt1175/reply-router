@@ -47,8 +47,8 @@ def find_draft_by_token(
 ) -> dict | None:
     """Search GHL contacts for one whose token_field == token. Returns contact dict or None.
 
-    Delegates to GHLClient.search_contacts_by_custom_field (Task 2.3 step 7) which uses
-    GHL's `/contacts/search` endpoint with `customField.{id}={value}` filter, requesting
+    Delegates to GHLClient.search_contacts_by_custom_field (Task 2.3 step 7) which POSTs
+    to GHL's `/contacts/search` endpoint with a `customFields.{id}` eq filter, requesting
     a unique match. If >1 contact has this token, raises (likely indicates a duplicate
     token generation bug — tokens are 32-byte urlsafe, collision probability is
     negligible, so multi-match means something else is wrong and a silent pick is unsafe).

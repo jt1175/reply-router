@@ -18,7 +18,7 @@ def client():
 @responses.activate
 def test_get_contact_by_email_single_match(client):
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": [{"id": "ct_1", "email": "prospect@example.com"}]},
         status=200,
@@ -31,7 +31,7 @@ def test_get_contact_by_email_single_match(client):
 @responses.activate
 def test_get_contact_by_email_no_match_returns_empty(client):
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": []},
         status=200,
@@ -43,7 +43,7 @@ def test_get_contact_by_email_no_match_returns_empty(client):
 @responses.activate
 def test_get_contact_by_email_network_error_raises(client):
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         status=500,
     )
@@ -133,7 +133,7 @@ def test_add_to_dnc(client):
 def test_resolve_contact_zero_matches_creates_skeleton(client):
     # First search returns nothing
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": []},
         status=200,
@@ -147,7 +147,7 @@ def test_resolve_contact_zero_matches_creates_skeleton(client):
     )
     # Re-fetch to detect concurrent-creation race
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": [{"id": "ct_new", "email": "new@example.com", "dateAdded": "2026-05-15T00:00:00Z"}]},
         status=200,
@@ -160,7 +160,7 @@ def test_resolve_contact_zero_matches_creates_skeleton(client):
 @responses.activate
 def test_resolve_contact_single_match(client):
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": [{"id": "ct_1", "email": "p@x.com"}]},
         status=200,
@@ -174,7 +174,7 @@ def test_resolve_contact_single_match(client):
 def test_resolve_contact_multi_match_prefers_in_campaign(client):
     """When multiple contacts match, prefer one that's in the configured campaign_ids."""
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": [
             {"id": "ct_old", "email": "p@x.com", "dateAdded": "2026-01-01T00:00:00Z", "campaigns": []},
@@ -191,7 +191,7 @@ def test_resolve_contact_multi_match_prefers_in_campaign(client):
 def test_resolve_contact_multi_match_ambiguous_picks_most_recent(client):
     """When multi-match and none in campaign, fall back to most recently modified + flag ambiguous."""
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": [
             {"id": "ct_a", "email": "p@x.com", "dateAdded": "2026-01-01T00:00:00Z", "campaigns": []},
@@ -207,7 +207,7 @@ def test_resolve_contact_multi_match_ambiguous_picks_most_recent(client):
 @responses.activate
 def test_search_contacts_by_custom_field_returns_match(client):
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": [{"id": "ct_token", "customFields": [{"id": "cf_token", "value": "abc123"}]}]},
         status=200,
@@ -220,7 +220,7 @@ def test_search_contacts_by_custom_field_returns_match(client):
 @responses.activate
 def test_search_contacts_by_custom_field_no_match_returns_empty(client):
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": []},
         status=200,
@@ -233,7 +233,7 @@ def test_search_contacts_by_custom_field_multi_match_raises(client):
     """Tokens are meant to be unique. If GHL returns >1, something's wrong with our token-gen
     or there's a stale duplicate — caller should investigate, not silently pick one."""
     responses.add(
-        responses.GET,
+        responses.POST,
         f"{GHL_BASE}/contacts/search",
         json={"contacts": [
             {"id": "ct_a", "customFields": [{"id": "cf_token", "value": "abc123"}]},

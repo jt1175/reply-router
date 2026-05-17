@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from api.health import app
+from api.index import app
 
 
 def test_health_returns_ok_with_required_fields():

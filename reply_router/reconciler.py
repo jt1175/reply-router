@@ -1,43 +1,20 @@
-"""Nightly reconciler cron. Fires via Vercel cron at 0 7 * * * UTC."""
+"""Nightly reconciler — 3-phase recovery for stuck soft locks, missed replies, and expired tokens.
+
+Extracted from api/reconcile.py so the FastAPI route layer can stay thin.
+"""
 from __future__ import annotations
 
 import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
-
-from reply_router.config import load_and_validate_all
 from reply_router.dedupe import SOFT_LOCK_TTL_SEC
 from reply_router.ghl_client import GHLClient
 from reply_router.orchestrator import ReplyPayload, process_reply
-from reply_router.slack_client import post_urgent
 from reply_router.smartlead_client import SmartleadClient
 
-app = FastAPI()
-logger = logging.getLogger("api.reconcile")
-
-CLIENTS_DIR = Path(os.environ.get("REPLY_ROUTER_CLIENTS_DIR", "clients"))
-
-
-@app.post("/api/reconcile")
-async def reconcile_endpoint(authorization: str = Header(default="")):
-    """Vercel cron POSTs here with Authorization: Bearer <VERCEL_CRON_SECRET>."""
-    expected = f"Bearer {os.environ.get('VERCEL_CRON_SECRET', '')}"
-    if not os.environ.get('VERCEL_CRON_SECRET') or authorization != expected:
-        raise HTTPException(401, "unauthorized")
-
-    configs = load_and_validate_all(CLIENTS_DIR)
-    summaries = {}
-    for client_id, cfg in configs.items():
-        try:
-            summaries[client_id] = reconcile_client(cfg)
-        except Exception as exc:
-            logger.exception("reconcile failed for client=%s", client_id)
-            summaries[client_id] = {"error": str(exc)}
-    return summaries
+logger = logging.getLogger("reply_router.reconciler")
 
 
 def reconcile_client(client_config) -> dict:

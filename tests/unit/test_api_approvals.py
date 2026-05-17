@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def approvals_client(monkeypatch, tmp_path):
-    """FastAPI TestClient against api.approvals.app with a minimal test config."""
+    """FastAPI TestClient against api.index.app with a minimal test config."""
     clients_dir = tmp_path / "clients"
     clients_dir.mkdir()
     test_cfg = clients_dir / "test_client.json"
@@ -49,7 +49,7 @@ def approvals_client(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_SMARTLEAD_API_KEY", "sl-test")
     monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/services/X/Y/Z")
     monkeypatch.setenv("REPLY_ROUTER_CLIENTS_DIR", str(clients_dir))
-    from api.approvals import app
+    from api.index import app
     return TestClient(app)
 
 
@@ -69,8 +69,8 @@ def _fresh_draft_contact(token="tok_abc", with_threading=True):
 
 
 # §7.3 #11 - full approval flow
-@patch("api.approvals.SmartleadClient")
-@patch("api.approvals.GHLClient")
+@patch("api.index.SmartleadClient")
+@patch("api.index.GHLClient")
 def test_shadow_mode_approval_flow_full(MockGHL, MockSmartlead, approvals_client):
     """GET form → POST /send → Smartlead called with threading params → token cleared → 2nd GET → 410."""
     ghl_instance = MockGHL.return_value
@@ -116,7 +116,7 @@ def test_shadow_mode_approval_flow_full(MockGHL, MockSmartlead, approvals_client
 
 
 # §7.3 #12 - CSRF required
-@patch("api.approvals.GHLClient")
+@patch("api.index.GHLClient")
 def test_shadow_mode_csrf_required(MockGHL, approvals_client):
     """POST /send without csrf → 403."""
     resp = approvals_client.post(
@@ -126,7 +126,7 @@ def test_shadow_mode_csrf_required(MockGHL, approvals_client):
     assert resp.status_code == 403
 
 
-@patch("api.approvals.GHLClient")
+@patch("api.index.GHLClient")
 def test_post_send_with_stale_csrf_returns_403(MockGHL, approvals_client):
     """form_issued_at_unix older than 1h → 403."""
     from reply_router.approvals import csrf_token
@@ -140,7 +140,7 @@ def test_post_send_with_stale_csrf_returns_403(MockGHL, approvals_client):
 
 
 def test_get_unknown_token_returns_410(approvals_client):
-    with patch("api.approvals.GHLClient") as MockGHL:
+    with patch("api.index.GHLClient") as MockGHL:
         MockGHL.return_value.search_contacts_by_custom_field.return_value = []
         resp = approvals_client.get("/v1/clients/test_client/approvals/nonsuch")
         assert resp.status_code == 410
@@ -149,7 +149,7 @@ def test_get_unknown_token_returns_410(approvals_client):
 def test_get_expired_token_returns_410_and_clears_fields(approvals_client):
     """Expired (>7d) token → 410, all 5 pending_* fields cleared."""
     old_iso = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
-    with patch("api.approvals.GHLClient") as MockGHL:
+    with patch("api.index.GHLClient") as MockGHL:
         ghl_inst = MockGHL.return_value
         ghl_inst.search_contacts_by_custom_field.return_value = [{
             "id": "ct_old", "customFields": [
@@ -167,8 +167,8 @@ def test_get_expired_token_returns_410_and_clears_fields(approvals_client):
         assert cf == {"cf_tok": "", "cf_dtext": "", "cf_dat": "", "cf_rmid": "", "cf_resid": ""}
 
 
-@patch("api.approvals.SmartleadClient")
-@patch("api.approvals.GHLClient")
+@patch("api.index.SmartleadClient")
+@patch("api.index.GHLClient")
 def test_post_send_missing_threading_params_returns_409(MockGHL, MockSml, approvals_client):
     """Defensive: if pending_reply_message_id or email_stats_id is missing, return 409
     rather than send a non-threaded reply. (iter-2 blocker #1 safety net.)"""
@@ -186,8 +186,8 @@ def test_post_send_missing_threading_params_returns_409(MockGHL, MockSml, approv
     MockSml.return_value.send_reply_in_thread.assert_not_called()
 
 
-@patch("api.approvals.SmartleadClient")
-@patch("api.approvals.GHLClient")
+@patch("api.index.SmartleadClient")
+@patch("api.index.GHLClient")
 def test_discard_clears_token_no_smartlead(MockGHL, MockSML, approvals_client):
     MockGHL.return_value.search_contacts_by_custom_field.return_value = [_fresh_draft_contact()]
     from reply_router.approvals import csrf_token

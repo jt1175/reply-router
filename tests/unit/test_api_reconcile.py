@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from api.reconcile import (
+from reply_router.reconciler import (
     reconcile_client,
     phase1_clear_stuck_soft_locks,
     phase2_smartlead_vs_ghl,
@@ -66,7 +66,7 @@ def test_phase1_handles_malformed_lock_value(stub_ghl, stub_slack_url):
 
 
 # §7.3 #19
-@patch("api.reconcile.process_reply")
+@patch("reply_router.reconciler.process_reply")
 def test_reconciler_picks_up_missed_webhook(mock_process_reply, stub_smartlead):
     """Phase 2: Smartlead returns a reply not in GHL rolling list → orchestrator.process_reply called."""
     mock_process_reply.return_value = MagicMock(status="processed", http_status=200)
@@ -83,7 +83,7 @@ def test_reconciler_picks_up_missed_webhook(mock_process_reply, stub_smartlead):
     assert kwargs.get("source") == "reconciler"
 
 
-@patch("api.reconcile.process_reply")
+@patch("reply_router.reconciler.process_reply")
 def test_phase2_aggregates_status_counts(mock_process_reply, stub_smartlead):
     """Phase 2 counts replies_seen, processed, skipped (duplicate / in_flight / ignored), errors."""
     mock_process_reply.side_effect = [
@@ -104,7 +104,7 @@ def test_phase2_aggregates_status_counts(mock_process_reply, stub_smartlead):
     assert counts["skipped"] == 2
 
 
-@patch("api.reconcile.process_reply")
+@patch("reply_router.reconciler.process_reply")
 def test_phase2_collects_errors(mock_process_reply, stub_smartlead):
     """An exception during process_reply is collected in errors[], not re-raised."""
     mock_process_reply.side_effect = RuntimeError("boom")
@@ -173,11 +173,11 @@ def test_reconcile_client_integration(monkeypatch):
     client_config.smartlead.campaign_ids = ["c1"]
     client_config.smartlead.api_key_env = "TEST_SL_API_KEY"
     client_config.slack.incoming_webhook_url_env = "TEST_SLACK_URL"
-    with patch("api.reconcile.GHLClient") as mock_ghl_cls, \
-         patch("api.reconcile.SmartleadClient") as mock_sl_cls, \
-         patch("api.reconcile.phase1_clear_stuck_soft_locks", return_value=2) as p1, \
-         patch("api.reconcile.phase2_smartlead_vs_ghl", return_value={"replies_seen": 5, "processed": 1, "skipped": 4, "errors": []}) as p2, \
-         patch("api.reconcile.phase3_expire_old_tokens", return_value=1) as p3:
+    with patch("reply_router.reconciler.GHLClient") as mock_ghl_cls, \
+         patch("reply_router.reconciler.SmartleadClient") as mock_sl_cls, \
+         patch("reply_router.reconciler.phase1_clear_stuck_soft_locks", return_value=2) as p1, \
+         patch("reply_router.reconciler.phase2_smartlead_vs_ghl", return_value={"replies_seen": 5, "processed": 1, "skipped": 4, "errors": []}) as p2, \
+         patch("reply_router.reconciler.phase3_expire_old_tokens", return_value=1) as p3:
         summary = reconcile_client(client_config)
     assert summary["client_id"] == "t"
     assert summary["phase_1"]["stuck_locks_recovered"] == 2

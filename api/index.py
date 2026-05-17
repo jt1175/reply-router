@@ -1,31 +1,36 @@
-"""Approval UI for shadow-mode drafts. Spec §4.3.
+"""Single FastAPI app exposing all reply-router HTTP routes.
 
-Routes:
-- GET  /v1/clients/{client_id}/approvals/{token}        → render form (200) or 410 if missing/expired
-- POST /v1/clients/{client_id}/approvals/{token}/send   → CSRF check → Smartlead send → clear token
-- POST /v1/clients/{client_id}/approvals/{token}/discard→ CSRF check → clear token
+Replaces the previous per-route files (api/replies.py, api/approvals.py,
+api/reconcile.py, api/health.py) because Vercel's Python serverless-function
+auto-detection wasn't matching the multi-file pattern. One ASGI entrypoint at
+api/index.py with a catch-all rewrite in vercel.json is the most reliable shape.
+
+All route paths and behavior are preserved verbatim from the original files.
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Form, Header, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from reply_router.approvals import (
-    csrf_token, verify_csrf, clear_draft, find_draft_by_token, is_expired,
+    clear_draft, csrf_token, find_draft_by_token, is_expired, verify_csrf,
 )
-from reply_router.config import load_client_config, ConfigError
+from reply_router.config import ConfigError, load_and_validate_all, load_client_config
 from reply_router.ghl_client import GHLClient
-from reply_router.slack_client import _post  # internal best-effort post for confirmation messages
+from reply_router.orchestrator import ReplyPayload, process_reply
+from reply_router.reconciler import reconcile_client
+from reply_router.slack_client import _post as _slack_post
 from reply_router.smartlead_client import SmartleadClient, SmartleadError
 
-app = FastAPI(title="reply-router-approvals")
-logger = logging.getLogger("api.approvals")
+app = FastAPI(title="reply-router", version="0.1.0")
+logger = logging.getLogger("api.index")
 
 
 def _clients_dir() -> Path:
@@ -35,8 +40,16 @@ def _clients_dir() -> Path:
 def _load_client(client_id: str):
     try:
         return load_client_config(_clients_dir() / f"{client_id}.json")
-    except (ConfigError, FileNotFoundError):
-        raise HTTPException(500, "config_load_failed")
+    except (ConfigError, FileNotFoundError) as exc:
+        logger.error("config load failed for client_id=%s err=%s", client_id, exc)
+        raise HTTPException(status_code=500, detail="config_load_failed") from exc
+
+
+def _check_router_secret(client_config, provided_secret: str) -> None:
+    expected = os.environ.get(client_config.auth.router_secret_env, "")
+    if not expected or provided_secret != expected:
+        logger.warning("auth fail for client_id=%s", client_config.client_id)
+        raise HTTPException(status_code=401, detail="unauthorized")
 
 
 def _build_ghl(cfg) -> GHLClient:
@@ -46,6 +59,35 @@ def _build_ghl(cfg) -> GHLClient:
         campaign_ids=cfg.smartlead.campaign_ids,
     )
 
+
+# ─── Health ──────────────────────────────────────────────────────────────────
+
+@app.get("/v1/health")
+async def health():
+    return {
+        "status": "ok",
+        "git_sha": os.environ.get("VERCEL_GIT_COMMIT_SHA", "unknown")[:12],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ─── Smartlead reply webhook ─────────────────────────────────────────────────
+
+@app.post("/v1/clients/{client_id}/replies")
+async def handle_reply(
+    client_id: str,
+    request: Request,
+    x_router_secret: str = Header(default=""),
+):
+    client_config = _load_client(client_id)
+    _check_router_secret(client_config, x_router_secret)
+    payload = await request.json()
+    rp = ReplyPayload.from_smartlead_webhook(payload)
+    result = process_reply(client_config, rp, source="webhook")
+    return JSONResponse(content=result.to_response(), status_code=result.http_status)
+
+
+# ─── Shadow-mode approval UI ─────────────────────────────────────────────────
 
 def _render_form(token: str, draft: str, csrf: str, iat: int, contact: dict, client_id: str) -> str:
     return f"""<!DOCTYPE html>
@@ -154,9 +196,6 @@ async def post_approval_send(
         )
         return _gone_page("This draft expired before it was sent.")
 
-    # Read the Smartlead threading params stored by the orchestrator at draft time
-    # (Task 4.1e). Both fields are required in the config schema; they're populated
-    # when the shadow draft is stored. Missing → 409 (defensive: never send non-threaded).
     email_stats_id = by_id.get(fids["pending_reply_email_stats_id"], "")
     reply_message_id = by_id.get(fids["pending_reply_message_id"], "")
     if not (email_stats_id and reply_message_id):
@@ -188,11 +227,10 @@ async def post_approval_send(
         reply_email_stats_id_field_id=fids["pending_reply_email_stats_id"],
     )
 
-    # Best-effort Slack confirm
     slack_url = os.environ.get(cfg.slack.incoming_webhook_url_env, "")
     if slack_url:
         try:
-            _post(slack_url, {"text": f"Approved + sent for contact {contact.get('email', '—')} at {time.strftime('%H:%M UTC')}"})
+            _slack_post(slack_url, {"text": f"Approved + sent for contact {contact.get('email', '—')} at {time.strftime('%H:%M UTC')}"})
         except Exception:
             pass
 
@@ -231,3 +269,23 @@ async def post_approval_discard(
         reply_email_stats_id_field_id=fids["pending_reply_email_stats_id"],
     )
     return HTMLResponse("<h1>Discarded</h1><p>The draft was cleared without sending.</p>")
+
+
+# ─── Nightly reconciler cron ─────────────────────────────────────────────────
+
+@app.post("/api/reconcile")
+async def reconcile_endpoint(authorization: str = Header(default="")):
+    """Vercel cron POSTs here with Authorization: Bearer <VERCEL_CRON_SECRET>."""
+    expected = f"Bearer {os.environ.get('VERCEL_CRON_SECRET', '')}"
+    if not os.environ.get('VERCEL_CRON_SECRET') or authorization != expected:
+        raise HTTPException(401, "unauthorized")
+
+    configs = load_and_validate_all(_clients_dir())
+    summaries = {}
+    for client_id, cfg in configs.items():
+        try:
+            summaries[client_id] = reconcile_client(cfg)
+        except Exception as exc:
+            logger.exception("reconcile failed for client=%s", client_id)
+            summaries[client_id] = {"error": str(exc)}
+    return summaries

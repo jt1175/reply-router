@@ -47,7 +47,7 @@ def app_client(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TEST_ROUTER_SECRET", "supersecret")
     monkeypatch.setenv("REPLY_ROUTER_CLIENTS_DIR", str(clients_dir))
-    from api.replies import app
+    from api.index import app
     return TestClient(app)
 
 
@@ -129,7 +129,7 @@ def app_client_full(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_SLACK_URL", "https://hooks.slack.com/x")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("REPLY_ROUTER_CLIENTS_DIR", str(clients_dir))
-    from api.replies import app
+    from api.index import app
     return TestClient(app)
 
 

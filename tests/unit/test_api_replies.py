@@ -88,6 +88,25 @@ def test_200_on_valid_secret_with_minimal_payload(app_client):
     assert resp.json()["status"] == "ignored_self"
 
 
+def test_200_on_valid_secret_via_query_param(app_client):
+    """Smartlead webhooks can't set custom headers — accept the secret via ?secret= too."""
+    resp = app_client.post(
+        "/v1/clients/test_client/replies?secret=supersecret",
+        json={"message_id": "m2", "from_email": "sender@test.invalid",
+              "lead_email": "p@example.com", "campaign_id": "c1", "reply_text": "hi"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ignored_self"
+
+
+def test_401_on_wrong_query_param_secret(app_client):
+    resp = app_client.post(
+        "/v1/clients/test_client/replies?secret=wrong",
+        json={},
+    )
+    assert resp.status_code == 401
+
+
 @pytest.fixture
 def app_client_full(monkeypatch, tmp_path):
     """Full test config including all 11 custom_field_ids."""

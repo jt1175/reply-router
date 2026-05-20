@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Header, HTTPException, Request, status
+from fastapi import FastAPI, Form, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from reply_router.approvals import (
@@ -78,9 +78,12 @@ async def handle_reply(
     client_id: str,
     request: Request,
     x_router_secret: str = Header(default=""),
+    secret: str = Query(default=""),
 ):
+    # Smartlead webhooks have no custom-header config — accept the shared secret
+    # via ?secret= query param as a fallback. Header wins if both present.
     client_config = _load_client(client_id)
-    _check_router_secret(client_config, x_router_secret)
+    _check_router_secret(client_config, x_router_secret or secret)
     payload = await request.json()
     rp = ReplyPayload.from_smartlead_webhook(payload)
     result = process_reply(client_config, rp, source="webhook")

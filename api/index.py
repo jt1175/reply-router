@@ -86,8 +86,8 @@ async def handle_reply(
     _check_router_secret(client_config, x_router_secret or secret)
     payload = await request.json()
     # Temporary: capture real Smartlead webhook shape so we can fix the parser.
-    # Truncate body to bound log size; redact reply_text-ish fields if huge.
-    logger.info(
+    # Use warning so Vercel doesn't filter it out (info-level is dropped in prod).
+    logger.warning(
         "smartlead webhook payload keys=%s sample=%s",
         list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
         __import__("json").dumps(payload)[:1500],

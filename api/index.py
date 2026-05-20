@@ -87,10 +87,18 @@ async def handle_reply(
     payload = await request.json()
     # Temporary: capture real Smartlead webhook shape so we can fix the parser.
     # Use warning so Vercel doesn't filter it out (info-level is dropped in prod).
+    _json = __import__("json")
+    # Strip bulky html/text/signature out of sent_message + reply to fit log budget.
+    _sample = _json.loads(_json.dumps(payload))  # deep copy
+    for sub in ("sent_message", "reply_message"):
+        if isinstance(_sample, dict) and isinstance(_sample.get(sub), dict):
+            for k in ("html", "text"):
+                if k in _sample[sub] and isinstance(_sample[sub][k], str):
+                    _sample[sub][k] = _sample[sub][k][:80] + "...[truncated]"
     logger.warning(
         "smartlead webhook payload keys=%s sample=%s",
         list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
-        __import__("json").dumps(payload)[:1500],
+        _json.dumps(_sample)[:5000],
     )
     rp = ReplyPayload.from_smartlead_webhook(payload)
     result = process_reply(client_config, rp, source="webhook")

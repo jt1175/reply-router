@@ -107,7 +107,7 @@ class GHLClient:
             )
 
     def move_to_pipeline_stage(
-        self, contact_id: str, pipeline_id: str, stage_id: str
+        self, contact_id: str, pipeline_id: str, stage_id: str, name: str = ""
     ) -> None:
         """Find or create the contact's opportunity in this pipeline; move to stage_id."""
         # Find existing opportunity for this contact in this pipeline
@@ -120,18 +120,21 @@ class GHLClient:
             )
         opportunities = resp.json().get("opportunities", [])
         if not opportunities:
-            # Create new opportunity
-            create_url = f"{GHL_BASE_URL}/opportunities"
+            # GHL v2 requires trailing slash on POST and a non-empty `name`.
+            create_url = f"{GHL_BASE_URL}/opportunities/"
             create_payload = {
                 "locationId": self.sub_account_id,
                 "contactId": contact_id,
                 "pipelineId": pipeline_id,
                 "pipelineStageId": stage_id,
                 "status": "open",
+                "name": name or contact_id,
             }
             resp = requests.post(create_url, headers=self._headers(), json=create_payload, timeout=10)
             if resp.status_code not in (200, 201):
-                raise RuntimeError(f"GHL opportunity create failed: status={resp.status_code}")
+                raise RuntimeError(
+                    f"GHL opportunity create failed: status={resp.status_code} body={resp.text[:200]}"
+                )
             return
         op_id = opportunities[0]["id"]
         update_url = f"{GHL_BASE_URL}/opportunities/{op_id}"

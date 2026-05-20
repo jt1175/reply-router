@@ -120,6 +120,31 @@ def test_move_to_pipeline_stage(client):
 
 
 @responses.activate
+def test_move_to_pipeline_stage_creates_with_name_and_trailing_slash(client):
+    """When no opportunity exists, POST to /opportunities/ (trailing slash required by GHL v2)
+    with a non-empty name field — both missing causes a 404 in production."""
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/opportunities/search",
+        json={"opportunities": []},
+        status=200,
+    )
+    create_call = responses.add(
+        responses.POST,
+        f"{GHL_BASE}/opportunities/",
+        json={"opportunity": {"id": "op_new"}},
+        status=201,
+    )
+    client.move_to_pipeline_stage(
+        contact_id="ct_1", pipeline_id="pipe_abc", stage_id="s2", name="Acme Inc"
+    )
+    import json as _json
+    posted = _json.loads(create_call.calls[0].request.body)
+    assert posted["name"] == "Acme Inc"
+    assert posted["pipelineStageId"] == "s2"
+
+
+@responses.activate
 def test_add_to_dnc(client):
     responses.add(
         responses.POST,

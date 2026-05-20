@@ -301,9 +301,12 @@ def test_interested_high_confidence_writes_ghl(mock_build, mock_classify, mock_g
     ghl_mock.update_contact.assert_called()
     ghl_mock.add_tags.assert_called()
     ghl_mock.add_note.assert_called()
-    ghl_mock.move_to_pipeline_stage.assert_called_with(
-        contact_id="ct_1", pipeline_id="p", stage_id="s3"
-    )
+    ghl_mock.move_to_pipeline_stage.assert_called_once()
+    call_kwargs = ghl_mock.move_to_pipeline_stage.call_args.kwargs
+    assert call_kwargs["contact_id"] == "ct_1"
+    assert call_kwargs["pipeline_id"] == "p"
+    assert call_kwargs["stage_id"] == "s3"
+    assert call_kwargs["name"]  # non-empty fallback chain — exact value depends on stub contact shape
     ghl_mock.add_to_dnc.assert_not_called()
 
 

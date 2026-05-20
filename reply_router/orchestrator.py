@@ -211,6 +211,12 @@ def process_reply(
             contact_id=contact["id"],
             pipeline_id=client_config.ghl.pipeline_id,
             stage_id=action_bundle.pipeline_stage_id,
+            name=(
+                contact.get("contactName")
+                or " ".join(filter(None, [contact.get("firstName"), contact.get("lastName")])).strip()
+                or contact.get("email")
+                or contact["id"]
+            ),
         )
 
         # §4.1 step 12 — DNC if routing says so (only unsubscribe). 3-retry with URGENT.

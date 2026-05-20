@@ -38,18 +38,82 @@ class ReplyPayload:
 
     @classmethod
     def from_smartlead_webhook(cls, payload: dict[str, Any]) -> "ReplyPayload":
-        """Parse a Smartlead webhook payload. Field names verified against captured
-        webhook in Task 5.3 step 1 — update this method then if Smartlead's keys differ.
+        """Parse a Smartlead webhook payload.
+
+        Field names verified empirically from sandbox-router-test on 2026-05-20:
+        - ``to_email`` / ``to_name``: the LEAD's identity (Smartlead's naming —
+          NOT ``lead_email``/``lead_name``).
+        - ``sent_message``: nested object with the original outbound's
+          ``message_id``, ``html``, ``text``, ``time``, ``subject``.
+        - ``stats_id``: top-level (per-sent-message UUID).
+        - The REPLY's content is in a sibling nested object — observed shape is
+          ``reply_message``; we also fall through to ``incoming_message`` and
+          message-history-style flat ``email_body`` for resilience across
+          Smartlead plan tiers.
+
+        Each accessor uses ``a or b or c or ""`` rather than ``payload.get(k, default)``
+        so that explicit None values fall through to the next candidate.
         """
+        reply = payload.get("reply_message") or payload.get("incoming_message") or {}
+        if not isinstance(reply, dict):
+            reply = {}
+        sent_msg = payload.get("sent_message") if isinstance(payload.get("sent_message"), dict) else {}
         return cls(
-            message_id=str(payload.get("message_id") or payload.get("id") or ""),
-            from_email=str(payload.get("from_email") or payload.get("from") or ""),
-            lead_email=str(payload.get("lead_email") or payload.get("to") or ""),
+            # REPLY's own message_id — used for dedupe rolling list. Must NOT
+            # collide with sent_message.message_id, which is the outbound's id.
+            message_id=str(
+                reply.get("message_id")
+                or payload.get("reply_message_id")
+                or payload.get("incoming_message_id")
+                or payload.get("message_id")
+                or ""
+            ),
+            # `from_email` is used by the loop check (`is this from one of our
+            # sending mailboxes?`). For inbound-reply webhooks the lead is the
+            # sender, and Smartlead exposes the lead via `to_email` (= who the
+            # outbound was sent to). Explicit `from_email` wins if a sender
+            # specifies one — useful for synthesized test payloads.
+            from_email=str(
+                payload.get("from_email")
+                or payload.get("to_email")
+                or payload.get("from")
+                or ""
+            ),
+            # `lead_email` is used to look up the lead in GHL. For real Smartlead
+            # webhooks of inbound replies, same value as from_email — but they're
+            # semantically distinct, so keep parallel fallback chains.
+            lead_email=str(
+                payload.get("lead_email")
+                or payload.get("to_email")
+                or payload.get("to")
+                or ""
+            ),
             campaign_id=str(payload.get("campaign_id") or ""),
-            reply_text=str(payload.get("reply_text") or payload.get("body") or ""),
-            email_stats_id=str(payload.get("email_stats_id") or ""),
-            original_subject=str(payload.get("subject") or ""),
-            sender_persona=str(payload.get("sender_persona") or payload.get("sender_name") or ""),
+            reply_text=str(
+                reply.get("text")
+                or reply.get("email_body")
+                or payload.get("reply_text")
+                or payload.get("body")
+                or reply.get("html")
+                or ""
+            ),
+            email_stats_id=str(
+                payload.get("stats_id")
+                or payload.get("email_stats_id")
+                or ""
+            ),
+            original_subject=str(
+                payload.get("subject")
+                or sent_msg.get("subject")
+                or reply.get("subject")
+                or ""
+            ),
+            sender_persona=str(
+                payload.get("to_name")
+                or payload.get("sender_persona")
+                or payload.get("sender_name")
+                or ""
+            ),
         )
 
 

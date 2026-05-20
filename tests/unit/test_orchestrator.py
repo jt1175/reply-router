@@ -1364,3 +1364,97 @@ def test_vercel_base_url_fallback_when_unset(monkeypatch):
     monkeypatch.delenv("VERCEL_URL_OVERRIDE", raising=False)
     monkeypatch.delenv("VERCEL_PROJECT_PRODUCTION_URL", raising=False)
     assert _vercel_base_url() == "https://reply-router.vercel.app"
+
+
+# ---------------------------------------------------------------------------
+# ReplyPayload.from_smartlead_webhook — payload shape verified empirically
+# from sandbox-router-test on 2026-05-20 (campaign 3360292, lead 3835638239)
+# ---------------------------------------------------------------------------
+
+def test_from_smartlead_webhook_with_real_payload_shape():
+    """Locks the field mapping for the actual Smartlead webhook payload
+    shape we captured during sandbox testing. Smartlead uses to_email /
+    to_name / stats_id — NOT lead_email / sender_name / email_stats_id."""
+    payload = {
+        "campaign_id": 3360292,
+        "stats_id": "7b27fb71-588d-4afa-b185-0259716ff44b",
+        "to_email": "jt@ksquaredai.com",
+        "to_name": "JT Kolke",
+        "subject": "Re: Router sandbox test",
+        "sent_message": {
+            "message_id": "<7b27fb71-588d-sl54-4afa-b185-0259716ff44b@discoverclearfacility.com>",
+            "html": "<p>original outbound...</p>",
+            "text": "original outbound...",
+            "time": "2026-05-20T03:31:27.910Z",
+            "subject": "Router sandbox test — please reply",
+        },
+        "reply_message": {
+            "message_id": "<CANVFsaQU9+-5OLCYogVDAYzLykuZy9i@mail.gmail.com>",
+            "text": "Thumbs up!",
+            "html": "<div>Thumbs up!</div>",
+            "time": "2026-05-20T03:32:08.000Z",
+        },
+    }
+    rp = ReplyPayload.from_smartlead_webhook(payload)
+    # The REPLY's own message id (not the outbound's). Must not collide.
+    assert rp.message_id == "<CANVFsaQU9+-5OLCYogVDAYzLykuZy9i@mail.gmail.com>"
+    assert rp.message_id != payload["sent_message"]["message_id"]
+    # The lead's email — pulled from Smartlead's `to_email`.
+    assert rp.from_email == "jt@ksquaredai.com"
+    assert rp.lead_email == "jt@ksquaredai.com"
+    assert rp.campaign_id == "3360292"
+    assert rp.reply_text == "Thumbs up!"
+    assert rp.email_stats_id == "7b27fb71-588d-4afa-b185-0259716ff44b"
+    assert rp.original_subject == "Re: Router sandbox test"
+    assert rp.sender_persona == "JT Kolke"
+
+
+def test_from_smartlead_webhook_falls_through_none_values():
+    """Skeleton-shaped contacts have explicit None values, not missing keys.
+    dict.get(key, default) returns None then — we must `or` past it."""
+    payload = {
+        "to_email": None,        # present but None
+        "lead_email": "fallback@example.com",  # the actual usable value
+        "campaign_id": 99,
+        "to_name": None,
+        "sender_name": "Persona Fallback",
+        "reply_text": "hi there",
+        "stats_id": None,
+        "email_stats_id": "stats_legacy",
+    }
+    rp = ReplyPayload.from_smartlead_webhook(payload)
+    # lead_email picks up the truthy fallback (precedence: lead_email → to_email → to)
+    assert rp.lead_email == "fallback@example.com"
+    # from_email has no `lead_email` fallback by design — these are semantically
+    # distinct concepts (sender vs lead-record), even if usually equal in practice
+    assert rp.from_email == ""
+    assert rp.sender_persona == "Persona Fallback"
+    assert rp.email_stats_id == "stats_legacy"
+    assert rp.reply_text == "hi there"
+
+
+def test_from_smartlead_webhook_reply_in_alternate_container():
+    """Smartlead may put reply data in `incoming_message` rather than
+    `reply_message` (varies across plan tiers / docs versions)."""
+    payload = {
+        "to_email": "lead@x.com",
+        "campaign_id": 1,
+        "stats_id": "s",
+        "incoming_message": {
+            "message_id": "<reply-mid>",
+            "text": "reply body",
+        },
+    }
+    rp = ReplyPayload.from_smartlead_webhook(payload)
+    assert rp.message_id == "<reply-mid>"
+    assert rp.reply_text == "reply body"
+
+
+def test_from_smartlead_webhook_empty_payload_yields_empty_strings():
+    """A wildly malformed payload should not crash — all fields default to ''."""
+    rp = ReplyPayload.from_smartlead_webhook({})
+    assert rp.message_id == ""
+    assert rp.from_email == ""
+    assert rp.lead_email == ""
+    assert rp.campaign_id == ""
+    assert rp.reply_text == ""

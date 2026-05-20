@@ -203,3 +203,20 @@ def test_discard_clears_token_no_smartlead(MockGHL, MockSML, approvals_client):
         c.kwargs.get("custom_fields", {}).get("cf_tok") == ""
         for c in MockGHL.return_value.update_contact.call_args_list
     )
+
+
+# Regression: skeleton contacts (created from inbound replies for unknown
+# senders) have customFields populated but firstName/companyName/email/title
+# as None — not missing. dict.get(key, default) returns None when the key is
+# present, blowing up html.escape() with AttributeError.
+@patch("api.index.GHLClient")
+def test_get_form_handles_skeleton_contact_with_none_fields(MockGHL, approvals_client):
+    skeleton = _fresh_draft_contact()
+    skeleton.update({"firstName": None, "companyName": None, "email": None, "name": None})
+    MockGHL.return_value.search_contacts_by_custom_field.return_value = [skeleton]
+    resp = approvals_client.get("/v1/clients/test_client/approvals/tok_abc")
+    assert resp.status_code == 200, resp.text
+    # Fields collapse to em-dash placeholders rather than crashing
+    assert "—" in resp.text
+    # And the draft itself still renders
+    assert "Hello, here's a quick call link" in resp.text

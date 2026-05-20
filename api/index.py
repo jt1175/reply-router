@@ -106,9 +106,9 @@ def _render_form(token: str, draft: str, csrf: str, iat: int, contact: dict, cli
 <body>
 <h1>Review draft reply</h1>
 <div class="ctx">
-  <strong>Contact:</strong> {escape(contact.get('firstName') or contact.get('name', '—'))}<br>
-  <strong>Company:</strong> {escape(contact.get('companyName', '—'))}<br>
-  <strong>Email:</strong> {escape(contact.get('email', '—'))}
+  <strong>Contact:</strong> {escape(contact.get('firstName') or contact.get('name') or '—')}<br>
+  <strong>Company:</strong> {escape(contact.get('companyName') or '—')}<br>
+  <strong>Email:</strong> {escape(contact.get('email') or '—')}
 </div>
 <form method="POST" action="/v1/clients/{escape(client_id)}/approvals/{escape(token)}/send">
   <label><strong>Draft (edit before sending if needed):</strong></label>

@@ -160,7 +160,7 @@ def process_reply(
         sender_persona=payload.sender_persona,
         sender_email=payload.from_email,
         original_subject=payload.original_subject,
-        company_name=contact.get("companyName", ""),
+        company_name=contact.get("companyName") or "",
         anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
     )
     classification = cls_result["classification"]
@@ -366,9 +366,12 @@ def process_reply(
                     confidence=confidence,
                     send_mode=effective_send_mode,
                     account={
-                        "company_name": contact.get("companyName", "—"),
+                        # contact.get(K, default) returns None when the key exists with
+                        # a None value (skeleton contacts have this shape). Use `or` to
+                        # also fall through on falsy/None values.
+                        "company_name": contact.get("companyName") or "—",
                         "contact_name": contact.get("firstName") or contact.get("name") or "—",
-                        "contact_title": contact.get("title", "—"),
+                        "contact_title": contact.get("title") or "—",
                         "pipeline_to": action_bundle.pipeline_stage_id,  # raw ID — v1.1 maps to display name
                     },
                     reply_text=payload.reply_text,
@@ -453,10 +456,12 @@ def _generate_response(
 
 
 def _to_account(contact: dict) -> dict:
+    # Same None-vs-default trap as the inline account dict above —
+    # use `or` to coerce explicit None values to the empty-string default.
     return {
         "contact_name": contact.get("firstName") or contact.get("name") or "there",
-        "company_name": contact.get("companyName", ""),
-        "contact_title": contact.get("title", ""),
+        "company_name": contact.get("companyName") or "",
+        "contact_title": contact.get("title") or "",
     }
 
 

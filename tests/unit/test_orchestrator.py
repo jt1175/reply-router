@@ -1329,3 +1329,38 @@ def test_monitoring_badge_when_today_before_monitoring_until(mock_build, mock_cl
     mock_notify.assert_called_once()
     # monitoring=True because today (2026-05-16) < monitoring_until (2099-12-31)
     assert mock_notify.call_args[1]["monitoring"] is True
+
+
+# ---------------------------------------------------------------------------
+# _vercel_base_url scheme handling — Slack rejects scheme-less URLs in buttons
+# ---------------------------------------------------------------------------
+
+def test_vercel_base_url_prepends_https_to_bare_hostname(monkeypatch):
+    """VERCEL_PROJECT_PRODUCTION_URL is set by Vercel runtime as a bare hostname
+    (no scheme). Slack's Block Kit rejects scheme-less URLs in button blocks
+    with `invalid_blocks`, so we must prepend https:// before use."""
+    from reply_router.orchestrator import _vercel_base_url
+    monkeypatch.delenv("VERCEL_URL_OVERRIDE", raising=False)
+    monkeypatch.setenv("VERCEL_PROJECT_PRODUCTION_URL", "reply-router.vercel.app")
+    assert _vercel_base_url() == "https://reply-router.vercel.app"
+
+
+def test_vercel_base_url_respects_existing_scheme(monkeypatch):
+    from reply_router.orchestrator import _vercel_base_url
+    monkeypatch.delenv("VERCEL_URL_OVERRIDE", raising=False)
+    monkeypatch.setenv("VERCEL_PROJECT_PRODUCTION_URL", "https://custom.example.com")
+    assert _vercel_base_url() == "https://custom.example.com"
+
+
+def test_vercel_base_url_override_wins(monkeypatch):
+    from reply_router.orchestrator import _vercel_base_url
+    monkeypatch.setenv("VERCEL_URL_OVERRIDE", "https://staging.example.com")
+    monkeypatch.setenv("VERCEL_PROJECT_PRODUCTION_URL", "reply-router.vercel.app")
+    assert _vercel_base_url() == "https://staging.example.com"
+
+
+def test_vercel_base_url_fallback_when_unset(monkeypatch):
+    from reply_router.orchestrator import _vercel_base_url
+    monkeypatch.delenv("VERCEL_URL_OVERRIDE", raising=False)
+    monkeypatch.delenv("VERCEL_PROJECT_PRODUCTION_URL", raising=False)
+    assert _vercel_base_url() == "https://reply-router.vercel.app"

@@ -163,10 +163,6 @@ def post_urgent(
 
 def _post(webhook_url: str, payload: dict[str, Any]) -> None:
     """Best-effort POST. Retries once on 5xx. Never raises (logs and continues)."""
-    logger.info(
-        "slack post: url_prefix=%s url_len=%d block_count=%d",
-        webhook_url[:50], len(webhook_url), len(payload.get("blocks", [])),
-    )
     for attempt in (1, 2):
         try:
             resp = requests.post(webhook_url, json=payload, timeout=DEFAULT_TIMEOUT_SEC)
@@ -178,9 +174,8 @@ def _post(webhook_url: str, payload: dict[str, Any]) -> None:
         if 200 <= resp.status_code < 300:
             return
         logger.error(
-            "slack post non-2xx attempt=%d status=%d body=%s payload=%s",
+            "slack post non-2xx attempt=%d status=%d body=%s",
             attempt, resp.status_code, resp.text[:200],
-            __import__("json").dumps(payload)[:1500],
         )
         if attempt == 2 or resp.status_code < 500:
             # Don't retry on 4xx (bad URL, malformed payload — retry won't help)

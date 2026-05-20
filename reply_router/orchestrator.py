@@ -461,9 +461,16 @@ def _to_account(contact: dict) -> dict:
 
 
 def _vercel_base_url() -> str:
-    return os.environ.get("VERCEL_URL_OVERRIDE") or os.environ.get(
-        "VERCEL_PROJECT_PRODUCTION_URL", "https://reply-router.vercel.app"
+    url = (
+        os.environ.get("VERCEL_URL_OVERRIDE")
+        or os.environ.get("VERCEL_PROJECT_PRODUCTION_URL")
+        or "https://reply-router.vercel.app"
     )
+    # VERCEL_PROJECT_PRODUCTION_URL is a bare hostname (no scheme). Slack
+    # rejects scheme-less URLs in button blocks with `invalid_blocks`.
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return url
 
 
 def _smartlead_unsub_with_retry(

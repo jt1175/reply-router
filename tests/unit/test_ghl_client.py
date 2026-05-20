@@ -183,6 +183,88 @@ def test_resolve_contact_zero_matches_creates_skeleton(client):
 
 
 @responses.activate
+def test_resolve_contact_handles_duplicate_email_via_search_index_lag(client):
+    """Regression: GHL's contact-search index is eventually consistent. If a
+    contact was created within seconds of the search, search returns 0 but
+    POST /contacts then rejects with 400 + `meta.contactId` pointing at the
+    existing record. We must recover by fetching that contact by ID rather
+    than raising — otherwise every webhook fired in this race window 500s."""
+    # Search returns 0 (stale index)
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": []},
+        status=200,
+    )
+    # Create rejected as duplicate, but GHL hands us the existing id in meta
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts",
+        json={
+            "statusCode": 400,
+            "message": "This location does not allow duplicated contacts.",
+            "meta": {"contactName": "", "contactId": "ct_already_existed", "matchingField": "email"},
+        },
+        status=400,
+    )
+    # Direct fetch by id finds the contact (bypasses search index)
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/ct_already_existed",
+        json={"contact": {"id": "ct_already_existed", "email": "race@example.com", "firstName": "Race"}},
+        status=200,
+    )
+    contact, resolution = client.resolve_contact_by_email("race@example.com")
+    assert contact["id"] == "ct_already_existed"
+    assert contact["firstName"] == "Race"
+    # Resolution is SINGLE (not CREATED_SKELETON) — the contact pre-existed
+    assert resolution == MultiContactResolution.SINGLE
+
+
+@responses.activate
+def test_resolve_contact_non_duplicate_400_still_raises(client):
+    """A 400 from POST /contacts that ISN'T a duplicate-email rejection should
+    still raise — don't swallow generic validation errors."""
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts/search",
+        json={"contacts": []},
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        f"{GHL_BASE}/contacts",
+        json={"statusCode": 400, "message": "Invalid email format", "meta": {}},
+        status=400,
+    )
+    with pytest.raises(RuntimeError, match="skeleton contact create failed"):
+        client.resolve_contact_by_email("bad@example.com")
+
+
+@responses.activate
+def test_get_contact_by_id_returns_contact(client):
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/ct_abc",
+        json={"contact": {"id": "ct_abc", "email": "x@y.com"}},
+        status=200,
+    )
+    c = client.get_contact_by_id("ct_abc")
+    assert c["id"] == "ct_abc"
+
+
+@responses.activate
+def test_get_contact_by_id_returns_none_on_404(client):
+    responses.add(
+        responses.GET,
+        f"{GHL_BASE}/contacts/missing",
+        json={"message": "not found"},
+        status=404,
+    )
+    assert client.get_contact_by_id("missing") is None
+
+
+@responses.activate
 def test_resolve_contact_single_match(client):
     responses.add(
         responses.POST,

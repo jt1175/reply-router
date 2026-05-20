@@ -42,6 +42,22 @@ class GHLClient:
             "Content-Type": "application/json",
         }
 
+    def get_contact_by_id(self, contact_id: str) -> dict[str, Any] | None:
+        """Fetch a single contact by ID. Bypasses the eventually-consistent
+        search index — use this when you have an authoritative contact_id (e.g.
+        from a `duplicate contact` create-rejection response). Returns None
+        on 404; raises on other non-2xx.
+        """
+        url = f"{GHL_BASE_URL}/contacts/{contact_id}"
+        resp = requests.get(url, headers=self._headers(), timeout=10)
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"GHL get_contact_by_id failed: status={resp.status_code} body={resp.text[:200]}"
+            )
+        return resp.json().get("contact")
+
     def get_contacts_by_email(self, email: str) -> list[dict[str, Any]]:
         """Return all GHL contacts matching this email in the configured sub-account.
 
@@ -187,8 +203,28 @@ class GHLClient:
                 create_url, headers=self._headers(), json=create_payload, timeout=10
             )
             if resp.status_code not in (200, 201):
+                # GHL's create endpoint rejects duplicate emails with a 400 and
+                # returns the existing contact's id in `meta.contactId`. The
+                # search-then-create approach races against GHL's eventually-
+                # consistent contact-search index: the contact exists, we just
+                # didn't see it. Recover by fetching that contact directly.
+                if resp.status_code == 400:
+                    try:
+                        body = resp.json()
+                    except ValueError:
+                        body = {}
+                    existing_id = (body.get("meta") or {}).get("contactId")
+                    if existing_id and "duplicat" in (body.get("message") or "").lower():
+                        existing = self.get_contact_by_id(existing_id)
+                        if existing:
+                            logger.warning(
+                                "GHL search-index lag for email=%s — search returned 0 but "
+                                "create rejected as duplicate; resolved via meta.contactId=%s",
+                                email, existing_id,
+                            )
+                            return existing, MultiContactResolution.SINGLE
                 raise RuntimeError(
-                    f"GHL skeleton contact create failed: status={resp.status_code}"
+                    f"GHL skeleton contact create failed: status={resp.status_code} body={resp.text[:200]}"
                 )
             created_id = resp.json().get("contact", {}).get("id")
             # Re-fetch: if >1 result, the race happened — pick lowest-id, log warning

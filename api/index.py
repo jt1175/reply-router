@@ -128,20 +128,22 @@ async def handle_reply(
             status_code=200,
         )
 
-    # Fall through to the reply path. Wrap payload parsing in try/except so malformed
-    # webhooks (missing required fields, junk payloads) return 200 with error noted
-    # rather than 500 + circuit-breaker risk.
+    # Fall through to the reply path. Wrap parsing + process_reply in a SINGLE
+    # try/except so anything malformed (missing fields, junk payloads, downstream
+    # crashes in process_reply) returns 200 ignored rather than 5xx + circuit
+    # breaker risk. ReplyPayload uses .get() defaults so it tolerates missing fields,
+    # but process_reply may crash on empty values (e.g. GHL lookup with empty email).
     try:
         rp = ReplyPayload.from_smartlead_webhook(payload)
+        result = process_reply(client_config, rp, source="webhook")
+        return JSONResponse(content=result.to_response(), status_code=result.http_status)
     except Exception as exc:
-        logger.warning("malformed reply payload — ignored: %s; keys=%s",
+        logger.warning("reply path crashed on malformed payload — ignored: %s; keys=%s",
                        exc, list(payload.keys()) if isinstance(payload, dict) else type(payload))
         return JSONResponse(
-            {"status": "ignored", "reason": "malformed reply payload"},
+            {"status": "ignored", "reason": f"malformed payload: {type(exc).__name__}"},
             status_code=200,
         )
-    result = process_reply(client_config, rp, source="webhook")
-    return JSONResponse(content=result.to_response(), status_code=result.http_status)
 
 
 # ─── Shadow-mode approval UI ─────────────────────────────────────────────────

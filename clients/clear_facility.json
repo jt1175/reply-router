@@ -174,7 +174,7 @@
       "too_busy_now": "Hear you. When does the dust settle \u2014 end of Q3 or sooner? I'll put a note on my side to circle back then.",
       "contract_locked_in": "When does that contract come up for renewal? Worth a walkthrough 60-90 days ahead so you have a real alternative on the table."
     },
-    "booking_link": "https://calendar.app.google/PLACEHOLDER_REPLACE_AFTER_GHL_CALENDAR_SETUP",
+    "booking_link": "https://reply-router.vercel.app/v1/clients/clear_facility/qualify/{contact_id}?token={token}",
     "credential_mentions": {
       "_doc": "JT_DRAFT 2026-05-20 \u2014 Shawn must opt-in per credential before each is surfaced. Until Shawn confirms specific items, treat all as 'do not surface' in responder output.",
       "issa": "JT_DRAFT_AWAITING_SHAWN_CONFIRM \u2014 ISSA-certified team (International Sanitary Supply Association).",

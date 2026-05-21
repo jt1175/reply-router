@@ -100,22 +100,46 @@ async def handle_reply(
     payload = await request.json()
 
     event_type = detect_event_type(payload)
-    # Only dispatch to non-reply handlers for EXPLICITLY recognized event types.
-    # Unknown payloads fall through to the existing REPLY processing path (which
-    # has its own loop-check, validation, and graceful failure modes).
+    # Three branches:
+    #   1. Recognized non-reply event → dedicated handler
+    #   2. EMAIL_REPLY or UNKNOWN (inferred-shape) → fall through to existing reply path
+    #   3. Anything else explicitly typed → ignore gracefully (e.g. future Smartlead
+    #      event types we don't handle yet, custom event_types in tests, etc.)
+    #
+    # Critical: ALL paths must return 200. Smartlead's circuit breaker pauses webhook
+    # delivery after 4 consecutive 5xx — see reference_smartlead_webhook_shape memory.
     KNOWN_NON_REPLY = {"EMAIL_OPEN", "LINK_CLICKED", "EMAIL_BOUNCED", "EMAIL_UNSUBSCRIBED"}
+
     if event_type in KNOWN_NON_REPLY:
         ghl = _build_ghl(client_config)
         try:
             result = handle_non_reply_event(event_type, payload, ghl, client_config)
         except Exception as exc:
-            # Never 5xx a Smartlead webhook — it'll trip their circuit breaker after
-            # 4 consecutive failures. Log + 200 with error noted in body.
             logger.exception("non-reply event handler crashed: %s", exc)
             return JSONResponse({"status": "error", "error": str(exc)}, status_code=200)
         return JSONResponse(result, status_code=200)
 
-    rp = ReplyPayload.from_smartlead_webhook(payload)
+    if event_type not in (EVENT_REPLY, "UNKNOWN"):
+        # Explicit event_type we don't handle (e.g. future Smartlead categories).
+        # Ignore but log so we can build a handler later if it shows up in prod.
+        logger.info("ignoring unhandled event_type=%r", event_type)
+        return JSONResponse(
+            {"status": "ignored", "reason": f"unhandled event_type={event_type}"},
+            status_code=200,
+        )
+
+    # Fall through to the reply path. Wrap payload parsing in try/except so malformed
+    # webhooks (missing required fields, junk payloads) return 200 with error noted
+    # rather than 500 + circuit-breaker risk.
+    try:
+        rp = ReplyPayload.from_smartlead_webhook(payload)
+    except Exception as exc:
+        logger.warning("malformed reply payload — ignored: %s; keys=%s",
+                       exc, list(payload.keys()) if isinstance(payload, dict) else type(payload))
+        return JSONResponse(
+            {"status": "ignored", "reason": "malformed reply payload"},
+            status_code=200,
+        )
     result = process_reply(client_config, rp, source="webhook")
     return JSONResponse(content=result.to_response(), status_code=result.http_status)
 

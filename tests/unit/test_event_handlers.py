@@ -269,3 +269,36 @@ def test_replies_endpoint_unknown_event_does_not_use_event_handler(monkeypatch, 
             )
             mock_handler.assert_not_called()
             mock_process.assert_called_once()
+
+
+def test_replies_endpoint_explicit_unknown_event_type_returns_200_ignored(webhook_client):
+    """Explicit but-unhandled event_type → 200 with status=ignored. Never 500.
+
+    Smartlead's circuit breaker pauses webhook delivery after 4 consecutive 5xx
+    (reference_smartlead_webhook_shape memory). Future event types must NOT crash.
+    """
+    resp = webhook_client.post(
+        "/v1/clients/test_client/replies?secret=supersecret",
+        json={"event_type": "FUTURE_SMARTLEAD_EVENT_WE_HAVE_NO_HANDLER_FOR"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ignored"
+    assert "unhandled event_type" in resp.json()["reason"]
+
+
+def test_replies_endpoint_malformed_reply_payload_returns_200_ignored(webhook_client):
+    """Malformed reply-shape payload → 200 ignored, NOT 500.
+
+    Same circuit-breaker reason as above. We never want a malformed webhook to 5xx.
+    """
+    from unittest.mock import patch
+    # Make ReplyPayload.from_smartlead_webhook raise (simulating a malformed payload)
+    with patch("api.index.ReplyPayload.from_smartlead_webhook",
+               side_effect=KeyError("missing required field")):
+        resp = webhook_client.post(
+            "/v1/clients/test_client/replies?secret=supersecret",
+            json={"some_garbage": "field"},  # No event_type → falls through to reply path
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+        assert "malformed" in resp.json()["reason"]

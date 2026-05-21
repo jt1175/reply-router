@@ -33,7 +33,7 @@
   "smartlead": {
     "api_key_env": "CFS_SMARTLEAD_API_KEY",
     "campaign_ids": [
-      "TBD_SMARTLEAD_CAMPAIGN_ID_PRIMARY"
+      "3368966"
     ]
   },
   "slack": {

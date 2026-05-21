@@ -12,6 +12,7 @@ env/
 htmlcov/
 .mypy_cache/
 *.egg-info/
+uv.lock
 
 # Vercel
 .vercel/

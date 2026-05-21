@@ -11,7 +11,7 @@ JT — here's what I got done overnight + what's left for you. Read top-down, kn
 - **Schedule:** Mon–Fri, 08:00–17:00 Central, 12-min gap between sends, max 75 new leads/day
 - **Settings:** stop-on-reply, plain-text mode, open-tracking OFF (cold inbox hygiene), 40% follow-up percentage
 - **Mailboxes:** all 15 of your warmed mailboxes attached (3 personas × 5 domains, all at 100% warmup)
-- **Sequence:** 4 touches with delays 0d / +3d / +7d / +14d, subjects + bodies pasted from `docs/smartlead_sequence_templates.md`, using the 8 engine merge vars
+- **Sequence:** 4 touches with delays 0d / +3d / +7d / +14d. Bodies use the 8 engine merge vars **plus** Smartlead built-ins `{{sender_first_name}}` and `{{signature}}` so each persona signs their own email (Sarah / Mike / Jessica), not Shawn. Shawn surfaces only at the calendar-pick step after qualification. (First upload had hardcoded "— Shawn" + manual footer; corrected at ~2:30 AM, see `docs/smartlead_sequence_templates.md`.)
 - **Webhook:** id=596722 registered → `reply-router.vercel.app/v1/clients/clear_facility/replies` with all 8 reply categories
 - **reply-router config:** `campaign_ids: ["3368966"]` wired + committed + pushed (commit `32fc452`)
 - **reply-router booking_link:** flipped off `PLACEHOLDER` → qualify endpoint (commit `102a105`). Safe: `interested`/`info_request`/`objection` still gated by `auto_send: false` in routing config, so still go to approval UI. Only `unsubscribe` + `out_of_office` auto-send, which are safe templated responses.
@@ -78,7 +78,17 @@ I tried automating this via Playwright but GHL's onboarding modals (phone-number
 
 This is **NOT a launch blocker** — first launch can ship without it. It only matters when you start manually moving opps to "Closed Won/Lost" and want Smartlead sequences to auto-pause. Even without it, the system works.
 
-### 3. Apollo Contacts export → merge → personalize → import → activate (~45 min)
+### 3. Fix 3 Jessica Martin mailbox display names (90 sec) — Smartlead UI
+
+Smartlead's API requires a password to update OAuth-connected mailboxes, so I couldn't patch these programmatically. In Smartlead → Settings → Email Accounts, click each of these and update **Display Name** from `jessica martin` → `Jessica Martin`:
+
+- `jessica.martin@clearfacilitymn.com` (id 18607413)
+- `jessica.martin@getclearfacilityservices.com` (id 18606893)
+- `jessica.martin@tryclearfacilityservices.com` (id 18606777)
+
+Otherwise `{{sender_first_name}}` will render lowercase `jessica` for those 3 mailboxes' sends.
+
+### 4. Apollo Contacts export → merge → personalize → import → activate (~45 min)
 
 This is the only path-to-live activity.
 
@@ -118,8 +128,8 @@ The `--skip-signals --skip-scoring` flags skip the expensive Perplexity/Google/C
 
 **E. Test-send before activation (5 min):**
 1. Add yourself to the campaign as a test lead
-2. Smartlead: send test of touch #1 to yourself
-3. Confirm: subject + body render correctly, no literal `{{var}}` strings visible, footer present
+2. Smartlead: send test of touch #1 from **at least one Sarah, one Mike, and one Jessica mailbox** (sequentially) to confirm persona rotation works
+3. Confirm: subject + body render correctly, no literal `{{var}}` strings visible, `{{sender_first_name}}` matches the sending mailbox, `{{signature}}` block at bottom shows that persona's name + address
 
 **F. Activate.**
 
@@ -196,11 +206,12 @@ Full reasoning + first-touch personalized subject/opener per company in `cohort_
 
 1. **First coffee:** drag-reorder the 2 GHL pipeline stages (20 sec)
 2. **Second coffee:** create the GHL stage-change workflow webhook (5 min)
-3. **Pull Apollo contacts** for the 8 winners (5 min)
-4. **Run the 2 commands** (merge_apollo_contacts.py → orchestrator --resume) (~15 min including the personalize run)
-5. **Import + test-send + activate** the Smartlead campaign (10 min)
-6. **Send Shawn the business_context confirmation email** (5 min — draft already written)
-7. Watch the first replies start flowing 24–48 hrs later → reply-router handles them
+3. **Fix the 3 Jessica mailbox display names** in Smartlead UI (90 sec)
+4. **Pull Apollo contacts** for the 8 winners (5 min)
+5. **Run the 2 commands** (merge_apollo_contacts.py → orchestrator --resume) (~15 min including the personalize run)
+6. **Import + multi-persona test-send + activate** the Smartlead campaign (10 min)
+7. **Send Shawn the business_context confirmation email** (5 min — draft already written)
+8. Watch the first replies start flowing 24–48 hrs later → reply-router handles them
 
 Total morning work: ~45–60 min start-to-launch.
 

@@ -23,6 +23,9 @@ from reply_router.approvals import (
     clear_draft, csrf_token, find_draft_by_token, is_expired, verify_csrf,
 )
 from reply_router.config import ConfigError, load_and_validate_all, load_client_config
+from reply_router.event_handlers import (
+    EVENT_REPLY, detect_event_type, handle_non_reply_event,
+)
 from reply_router.ghl_client import GHLClient
 from reply_router.orchestrator import ReplyPayload, process_reply
 from reply_router.qualification_ui import (
@@ -90,9 +93,28 @@ async def handle_reply(
 ):
     # Smartlead webhooks have no custom-header config — accept the shared secret
     # via ?secret= query param as a fallback. Header wins if both present.
+    # The single webhook URL receives all event categories (REPLY, OPEN, CLICK,
+    # BOUNCE, UNSUBSCRIBE). Dispatch by event_type.
     client_config = _load_client(client_id)
     _check_router_secret(client_config, x_router_secret or secret)
     payload = await request.json()
+
+    event_type = detect_event_type(payload)
+    # Only dispatch to non-reply handlers for EXPLICITLY recognized event types.
+    # Unknown payloads fall through to the existing REPLY processing path (which
+    # has its own loop-check, validation, and graceful failure modes).
+    KNOWN_NON_REPLY = {"EMAIL_OPEN", "LINK_CLICKED", "EMAIL_BOUNCED", "EMAIL_UNSUBSCRIBED"}
+    if event_type in KNOWN_NON_REPLY:
+        ghl = _build_ghl(client_config)
+        try:
+            result = handle_non_reply_event(event_type, payload, ghl, client_config)
+        except Exception as exc:
+            # Never 5xx a Smartlead webhook — it'll trip their circuit breaker after
+            # 4 consecutive failures. Log + 200 with error noted in body.
+            logger.exception("non-reply event handler crashed: %s", exc)
+            return JSONResponse({"status": "error", "error": str(exc)}, status_code=200)
+        return JSONResponse(result, status_code=200)
+
     rp = ReplyPayload.from_smartlead_webhook(payload)
     result = process_reply(client_config, rp, source="webhook")
     return JSONResponse(content=result.to_response(), status_code=result.http_status)

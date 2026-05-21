@@ -36,10 +36,18 @@ GHL_VERSION = "2021-07-28"
 
 CALENDAR_NAME = "Discovery Call"
 FIELDS_TO_CREATE = [
+    # Qualification flow (Step 1)
     {"key": "qualification_form_answers", "name": "Qualification Form Answers", "dataType": "LARGE_TEXT"},
     {"key": "qualification_result", "name": "Qualification Result", "dataType": "SINGLE_OPTIONS",
      "options": ["qualify", "gray_zone", "reject"]},
     {"key": "qualification_submitted_at", "name": "Qualification Submitted At", "dataType": "DATE"},
+    # Smartlead → GHL metrics sync (Step 3b)
+    {"key": "email_open_count", "name": "Email Open Count", "dataType": "NUMERICAL"},
+    {"key": "email_click_count", "name": "Email Click Count", "dataType": "NUMERICAL"},
+    {"key": "email_bounce_count", "name": "Email Bounce Count", "dataType": "NUMERICAL"},
+    {"key": "last_open_at", "name": "Last Email Open At", "dataType": "DATE"},
+    {"key": "last_click_at", "name": "Last Email Click At", "dataType": "DATE"},
+    {"key": "unsubscribed_at", "name": "Unsubscribed At", "dataType": "DATE"},
 ]
 
 

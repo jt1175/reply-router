@@ -46,6 +46,11 @@ class GHLConfig(BaseModel):
             # shadow reply would 4xx or send non-threaded. See spec §4.3 + Task 4.1e.
             "pending_reply_message_id", "pending_reply_email_stats_id",
         }
+        # pending_reply_campaign_id is OPTIONAL (added 2026-05-21): tracks
+        # which campaign the original outbound came from so the approval
+        # endpoint sends the threaded reply via the right Smartlead campaign.
+        # Configs without it fall back to campaign_ids[0], matching the
+        # pre-2026-05-21 single-campaign-per-client behavior.
         # Note: qualification_form_answers/result/submitted_at are required only when the
         # qualification booking flow is wired up. The endpoint checks for their presence
         # at request time; schema-level absence is permitted so existing test fixtures

@@ -264,10 +264,18 @@ async def post_approval_send(
         )
         raise HTTPException(409, "draft_missing_threading_params")
 
+    # Pull the stored campaign_id (which campaign the original outbound came
+    # from). Fallback to campaign_ids[0] for legacy drafts that pre-date the
+    # pending_reply_campaign_id field (added 2026-05-21).
+    reply_campaign_id = (
+        by_id.get(fids.get("pending_reply_campaign_id", ""), "")
+        or cfg.smartlead.campaign_ids[0]
+    )
+
     smartlead = SmartleadClient(api_key=os.environ[cfg.smartlead.api_key_env])
     try:
         smartlead.send_reply_in_thread(
-            campaign_id=cfg.smartlead.campaign_ids[0],
+            campaign_id=reply_campaign_id,
             email_stats_id=email_stats_id,
             body=draft_text,
             reply_message_id=reply_message_id,

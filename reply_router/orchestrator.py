@@ -415,13 +415,17 @@ def process_reply(
         # can pass them to send_reply_in_thread at approve time. Without these, every
         # approved shadow reply would fail or send non-threaded — see reviewer iteration
         # 2 blocker #1.
-        ghl.update_contact(
-            contact["id"],
-            custom_fields={
-                fids["pending_reply_message_id"]: payload.message_id,
-                fids["pending_reply_email_stats_id"]: payload.email_stats_id,
-            },
-        )
+        # Track which campaign the original outbound came from so the approval
+        # endpoint can send the threaded reply via the right Smartlead campaign.
+        # Configs without pending_reply_campaign_id wired fall back to
+        # campaign_ids[0] in api/index.py — matches pre-2026-05-21 behavior.
+        update_fields = {
+            fids["pending_reply_message_id"]: payload.message_id,
+            fids["pending_reply_email_stats_id"]: payload.email_stats_id,
+        }
+        if fids.get("pending_reply_campaign_id"):
+            update_fields[fids["pending_reply_campaign_id"]] = payload.campaign_id
+        ghl.update_contact(contact["id"], custom_fields=update_fields)
         approval_url = f"{_vercel_base_url()}/v1/clients/{client_config.client_id}/approvals/{token}"
         logger.info("shadow draft stored token=%s contact=%s", token, contact["id"])
 

@@ -106,6 +106,10 @@ class ClientConfig(BaseModel):
     qualify_pipeline_stage_id: str | None = None
     gray_zone_pipeline_stage_id: str | None = None
     reject_pipeline_stage_id: str | None = None
+    # Bidirectional sync — GHL stage IDs that, when an opportunity moves into them,
+    # should pause the contact's Smartlead lead (no more follow-ups to closed deals).
+    # Default: Closed Won + Closed Lost stages (when configured).
+    pause_on_stage_ids: list[str] = []
 
     # Allow underscore-prefixed _doc_* and _pending_domains keys
     model_config = {"extra": "allow"}

@@ -108,6 +108,11 @@
   "_gray_zone_pipeline_stage_doc": "GHL stage 'Nurture' (per GHL UI) \u2014 used for gray-zone qualifications. Stage name in GHL differs from the 'Manual Review' label used in older code comments; the ID is canonical.",
   "reject_pipeline_stage_id": "35b68ea1-220f-41ef-8833-e73ef190f25a",
   "_reject_pipeline_stage_doc": "GHL stage 'Closed Lost' \u2014 used for pre-qualification rejects (out-of-scope industry, hard exclusions). Same stage unsubscribes already use.",
+  "pause_on_stage_ids": [
+    "10a5f924-2cf9-4b05-b75a-052b9d226db0",
+    "35b68ea1-220f-41ef-8833-e73ef190f25a"
+  ],
+  "_pause_on_stage_ids_doc": "GHL stage IDs (Closed Won + Closed Lost). When an opportunity moves into these, the bidirectional sync pauses the contact's Smartlead lead so no more follow-ups go out.",
   "business_context": {
     "_doc_status": "Shawn-supplied content. Many fields are TBD until JT confirms specific marketing copy with Shawn. Skeleton uses derivable values from CFS engagement memory + intent-signal-engine config. Booking link is intentionally a PLACEHOLDER sentinel; orchestrator detects 'PLACEHOLDER' substring (case-insensitive) and forces shadow_send for interested/info_request/objection until JT provisions the real GHL calendar URL.",
     "company_name": "Clear Facility Services",

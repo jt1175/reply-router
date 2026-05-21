@@ -638,6 +638,133 @@ async def post_qualification_book(
     )
 
 
+# ─── Bidirectional sync: GHL stage change → Smartlead pause ──────────────────
+
+@app.post("/v1/clients/{client_id}/ghl-stage-change")
+async def handle_ghl_stage_change(
+    client_id: str,
+    request: Request,
+    x_router_secret: str = Header(default=""),
+    secret: str = Query(default=""),
+):
+    """GHL workflow webhook fires here on opportunity stage change.
+
+    When the new stage is in `pause_on_stage_ids` (Closed Won/Lost by default),
+    we look up the contact's Smartlead lead by email and pause its sequence so
+    no more follow-ups go out to closed prospects. Idempotent — repeated firings
+    for the same opp/stage are no-ops downstream.
+
+    Expected GHL workflow payload (configurable in the workflow's HTTP action):
+        {
+            "contactId": "...",
+            "opportunityId": "...",          # optional, logged but not used
+            "currentStage": "<stage_id>",     # GHL stage ID, NOT name
+            "previousStage": "<stage_id>",    # optional
+            "locationId": "..."               # optional
+        }
+
+    Auth: shared secret via ?secret= query param OR X-Router-Secret header
+    (GHL workflow HTTP actions support custom headers, but the query form
+    matches the Smartlead webhook pattern for symmetry).
+    """
+    client_config = _load_client(client_id)
+    _check_router_secret(client_config, x_router_secret or secret)
+    payload = await request.json()
+
+    contact_id = payload.get("contactId") or payload.get("contact_id")
+    new_stage = payload.get("currentStage") or payload.get("current_stage") or payload.get("stage_id")
+    if not contact_id or not new_stage:
+        logger.warning("ghl-stage-change missing required fields: %s", list(payload.keys()))
+        return JSONResponse(
+            {"status": "ignored", "reason": "missing contactId or currentStage"},
+            status_code=200,  # 200 so GHL doesn't trip its own retry circuit
+        )
+
+    pause_stages = set(client_config.pause_on_stage_ids or [])
+    if not pause_stages:
+        return JSONResponse(
+            {"status": "ignored", "reason": "no pause_on_stage_ids configured"},
+            status_code=200,
+        )
+    if new_stage not in pause_stages:
+        return JSONResponse(
+            {"status": "ignored", "reason": "stage not in pause list",
+             "stage": new_stage},
+            status_code=200,
+        )
+
+    # Resolve contact → email → Smartlead lead
+    ghl = _build_ghl(client_config)
+    contact = ghl.get_contact_by_id(contact_id)
+    if not contact:
+        logger.warning("ghl-stage-change: contact %s not found", contact_id)
+        return JSONResponse(
+            {"status": "ignored", "reason": "contact not found"}, status_code=200
+        )
+    email = contact.get("email") or ""
+    if not email:
+        return JSONResponse(
+            {"status": "ignored", "reason": "contact has no email"}, status_code=200
+        )
+
+    smartlead_api_key = os.environ.get(client_config.smartlead.api_key_env, "")
+    if not smartlead_api_key:
+        return JSONResponse(
+            {"status": "deferred", "reason": "smartlead key not configured"},
+            status_code=503,
+        )
+    smartlead = SmartleadClient(api_key=smartlead_api_key)
+    try:
+        lead = smartlead.find_lead_by_email(email)
+    except SmartleadError as exc:
+        logger.error("ghl-stage-change: find_lead_by_email failed: %s", exc)
+        return JSONResponse(
+            {"status": "deferred", "reason": f"smartlead lookup failed: {exc}"},
+            status_code=503,
+        )
+    if not lead or not lead.get("id"):
+        return JSONResponse(
+            {"status": "ignored", "reason": "lead not found in smartlead",
+             "email": email},
+            status_code=200,
+        )
+
+    lead_id = lead["id"]
+    # Pause in every configured campaign the lead is enrolled in.
+    paused_in: list[str] = []
+    errors: list[str] = []
+    for campaign_id in client_config.smartlead.campaign_ids:
+        if campaign_id.startswith("TBD_"):
+            continue
+        try:
+            smartlead.pause_lead(campaign_id, str(lead_id))
+            paused_in.append(campaign_id)
+        except SmartleadError as exc:
+            errors.append(f"{campaign_id}: {exc}")
+            logger.error("pause_lead failed in campaign=%s: %s", campaign_id, exc)
+
+    # Note the action on the GHL contact for audit trail
+    try:
+        ghl.add_note(
+            contact_id,
+            f"Stage→{new_stage}; Smartlead pause: campaigns={paused_in or 'none'} "
+            f"errors={errors or 'none'}",
+        )
+    except Exception:
+        logger.exception("ghl-stage-change: failed to add audit note")
+
+    return JSONResponse(
+        {
+            "status": "processed",
+            "contact_id": contact_id,
+            "smartlead_lead_id": lead_id,
+            "paused_in_campaigns": paused_in,
+            "errors": errors,
+        },
+        status_code=200,
+    )
+
+
 # ─── Nightly reconciler cron ─────────────────────────────────────────────────
 
 @app.post("/api/reconcile")

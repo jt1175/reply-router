@@ -114,6 +114,55 @@ class SmartleadClient:
                 replies.append(r)
         return replies
 
+    def find_lead_by_email(self, email: str) -> dict | None:
+        """Look up a Smartlead lead by email address.
+
+        Endpoint: GET /leads/?api_key=...&email=...
+        Returns lead dict with keys id, email, first_name, lead_campaign_data, ...
+        Returns None when the lead doesn't exist (Smartlead returns `{}`).
+        """
+        if not email:
+            return None
+        url = f"{SMARTLEAD_BASE}/leads/"
+        try:
+            resp = requests.get(
+                url, params=self._params(email=email), timeout=DEFAULT_TIMEOUT_SEC
+            )
+        except requests.RequestException as exc:
+            raise SmartleadError(f"find_lead_by_email network error: {exc}") from exc
+        if resp.status_code != 200:
+            raise SmartleadError(
+                f"find_lead_by_email failed: status={resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+        data = resp.json()
+        if not data or not isinstance(data, dict) or not data.get("id"):
+            return None
+        return data
+
+    def pause_lead(self, campaign_id: str, lead_id: str) -> None:
+        """Pause a lead's sequence in a campaign. No further emails sent until resumed.
+
+        Endpoint: POST /campaigns/{cid}/leads/{lid}/pause?api_key=...
+        Empirically verified via Smartlead API docs (2026-05-20). Handles 404 quietly
+        — lead may have already completed sequence or been removed; either way, the
+        end state ("no more sends to this lead") is achieved.
+        """
+        url = f"{SMARTLEAD_BASE}/campaigns/{campaign_id}/leads/{lead_id}/pause"
+        try:
+            resp = requests.post(url, params=self._params(), timeout=DEFAULT_TIMEOUT_SEC)
+        except requests.RequestException as exc:
+            raise SmartleadError(f"pause_lead network error: {exc}") from exc
+        if resp.status_code == 404:
+            logger.info("pause_lead 404 (lead may already be done): campaign=%s lead=%s",
+                        campaign_id, lead_id)
+            return
+        if resp.status_code not in (200, 201, 204):
+            raise SmartleadError(
+                f"pause_lead failed: status={resp.status_code} "
+                f"campaign={campaign_id} lead={lead_id} body={resp.text[:200]}"
+            )
+
     def mark_unsubscribe(self, campaign_id: str, lead_id: str) -> None:
         """Mark a Smartlead lead as unsubscribed in the campaign.
 

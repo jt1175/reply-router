@@ -97,7 +97,7 @@ def generate_template(
         logger.error("template generation failed: %s", exc)
         return ResponderResult(text="", failed=True)
 
-    if not (20 <= len(text) <= 800):
+    if not (20 <= len(text) <= 1200):
         logger.warning("response length validation failed: len=%d", len(text))
         return ResponderResult(text=text, requires_shadow=True, failed=True)
 
@@ -217,7 +217,7 @@ LOAD-BEARING RULES (do not violate; failures cause test failures):
 - If they asked about a service we offer (services_offered), confirm it specifically by name.
 - If they asked about a service we don't do (services_not_offered), politely say it's not our focus area. NEVER promise to do an excluded service.
 - NEVER claim a credential not in the CREDENTIALS YOU MAY REFERENCE list above. If the list is "(none confirmed...)", do not reference any credential, certification, insurance status, or year-founded claim.
-- Keep it to 3-5 sentences max.
+- Keep the body to 3-4 short sentences. Be specific and concise — no fluff. Total response (including signoff) MUST be under 1000 characters.
 - End with the booking link as the next step — UNLESS the response naturally doesn't lead there (e.g., a flat-no objection).
 - {sender_signoff_instruction}
 
@@ -299,7 +299,7 @@ def generate_contextual(
         logger.error("contextual responder API call failed: %s", exc)
         return ResponderResult(text="", failed=True)
 
-    if not (20 <= len(text) <= 800):
+    if not (20 <= len(text) <= 1200):
         logger.warning("contextual response length validation failed: len=%d", len(text))
         return ResponderResult(text=text, requires_shadow=True, failed=True)
 

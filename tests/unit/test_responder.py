@@ -137,8 +137,11 @@ def test_short_response_triggers_failure(mock_anthropic_cls):
 
 @patch("reply_router.responder.Anthropic")
 def test_long_response_triggers_failure(mock_anthropic_cls):
-    """> 800 char response is failure."""
-    mock_anthropic_cls.return_value = _mock_claude("x" * 900)
+    """> 1200 char response is failure. Cap was raised from 800 → 1200 on
+    2026-05-21 to accommodate info_request responses that need to answer
+    2-3 specific prospect questions + include the booking link URL (which
+    is itself ~100 chars after token expansion)."""
+    mock_anthropic_cls.return_value = _mock_claude("x" * 1300)
     result = generate_template(
         classification="wrong_person",
         account={"contact_name": "X", "company_name": "Y"},

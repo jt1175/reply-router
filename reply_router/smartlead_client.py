@@ -27,7 +27,10 @@ DEFAULT_TIMEOUT_SEC = 15
 # Verification flags. MUST stay False until the endpoint URL is confirmed via the
 # Step 2 research. When False, the corresponding method raises immediately on call,
 # guaranteeing an unverified URL can never ship to production.
-_LIST_REPLIES_ENDPOINT_VERIFIED = False
+#
+# list_replies VERIFIED 2026-05-21 against live Smartlead API via
+# POST /master-inbox/inbox-replies. Response shape documented inline below.
+_LIST_REPLIES_ENDPOINT_VERIFIED = True
 _MARK_UNSUBSCRIBE_ENDPOINT_VERIFIED = False
 
 
@@ -79,40 +82,121 @@ class SmartleadClient:
     def list_replies(
         self, campaign_ids: list[str], since: datetime
     ) -> list[dict[str, Any]]:
-        """List replies received since `since` across all given campaigns.
+        """List replies received since `since` across given campaigns.
 
-        URL is TENTATIVE until Step 2 research confirms — see
-        docs/smartlead-api-research.md. While _LIST_REPLIES_ENDPOINT_VERIFIED is
-        False, this raises immediately on call.
+        Uses POST /master-inbox/inbox-replies with fetch_message_history=true.
+        Verified empirically 2026-05-21 against live Smartlead.
+
+        Real response shape (verified, NOT what the docs claim):
+            {
+              "ok": true,
+              "data": [
+                {
+                  "lead_email": "...",
+                  "email_lead_id": "...",        # = Smartlead's internal lead_id
+                  "email_campaign_id": <int>,
+                  "lead_first_name": "...", "lead_last_name": "...",
+                  "last_reply_time": "ISO",
+                  "email_history": [
+                    {"type": "SENT", "stats_id": "...", "message_id": "<...>",
+                     "subject": "...", "email_body": "<html>...", ...},
+                    {"type": "REPLY", "stats_id": "<matches SENT>",
+                     "message_id": "<...@mail.gmail.com>", "email_body": "<html>...",
+                     "from": "<lead>", "to": "<sender>", "time": "ISO", ...}
+                  ]
+                }, ...
+              ],
+              "offset": N, "limit": M
+            }
+
+        For each lead, we flatten each REPLY message into a row caller can convert
+        to ReplyPayload. The corresponding SENT's stats_id is paired in so threading
+        downstream (send_reply_in_thread) keeps working.
+
+        Pagination: response has no total_count. Loop until data array shorter than
+        limit (= no more pages).
         """
         if not _LIST_REPLIES_ENDPOINT_VERIFIED:
             raise RuntimeError(
-                "Smartlead list_replies endpoint not yet verified — see Task 2.4 step 2 "
-                "and docs/smartlead-api-research.md. Set _LIST_REPLIES_ENDPOINT_VERIFIED "
-                "to True after replacing the URL with the confirmed one."
+                "Smartlead list_replies endpoint not yet verified — see "
+                "_LIST_REPLIES_ENDPOINT_VERIFIED in this module."
             )
-        replies: list[dict[str, Any]] = []
-        for cid in campaign_ids:
-            # REPLACE with confirmed endpoint from Step 2 research:
-            url = f"{SMARTLEAD_BASE}/campaigns/{cid}/messages"
+
+        # Smartlead campaignId filter is max 5; chunk if needed.
+        # In practice for CFS we have 1 campaign so this is a no-op.
+        if len(campaign_ids) > 5:
+            raise SmartleadError(
+                f"list_replies: campaign_ids filter exceeds Smartlead's max of 5 "
+                f"(got {len(campaign_ids)}). Chunk before calling."
+            )
+        # Smartlead uses NUMERIC campaign IDs; coerce strings to int.
+        try:
+            campaign_ids_int = [int(cid) for cid in campaign_ids if not cid.startswith("TBD_")]
+        except (ValueError, AttributeError) as exc:
+            raise SmartleadError(f"list_replies: non-numeric campaign_id: {exc}") from exc
+        if not campaign_ids_int:
+            return []
+
+        now = datetime.now(since.tzinfo) if since.tzinfo else datetime.utcnow()
+        body_filters: dict[str, Any] = {
+            "campaignId": campaign_ids_int,
+            "replyTimeBetween": [since.isoformat(), now.isoformat()],
+        }
+
+        url = f"{SMARTLEAD_BASE}/master-inbox/inbox-replies"
+        page_limit = 20  # Smartlead max
+        offset = 0
+        flattened: list[dict[str, Any]] = []
+        while True:
             try:
-                resp = requests.get(
+                resp = requests.post(
                     url,
-                    params=self._params(since=since.isoformat()),
+                    params=self._params(fetch_message_history="true"),
+                    json={"offset": offset, "limit": page_limit, "filters": body_filters,
+                          "sortBy": "REPLY_TIME_DESC"},
                     timeout=DEFAULT_TIMEOUT_SEC,
                 )
             except requests.RequestException as exc:
                 raise SmartleadError(f"list_replies network error: {exc}") from exc
             if resp.status_code != 200:
                 raise SmartleadError(
-                    f"list_replies failed: status={resp.status_code} cid={cid}"
+                    f"list_replies failed: status={resp.status_code} "
+                    f"body={resp.text[:200]}"
                 )
-            data = resp.json()
-            # Adjust key if confirmed endpoint uses "replies" / "data" / etc.
-            for r in data.get("messages", data.get("replies", [])):
-                r["campaign_id"] = cid  # caller relies on this for routing
-                replies.append(r)
-        return replies
+            payload_json = resp.json()
+            leads = payload_json.get("data") or []
+            for lead in leads:
+                lead_email = lead.get("lead_email") or ""
+                campaign_id = lead.get("email_campaign_id")
+                history = lead.get("email_history") or []
+                # Pair each REPLY with the SENT whose stats_id matches (for threading)
+                sent_by_stats: dict[str, dict] = {
+                    h["stats_id"]: h for h in history
+                    if h.get("type") == "SENT" and h.get("stats_id")
+                }
+                for h in history:
+                    if h.get("type") != "REPLY":
+                        continue
+                    stats_id = h.get("stats_id") or ""
+                    sent = sent_by_stats.get(stats_id, {})
+                    flattened.append({
+                        "message_id": h.get("message_id", ""),
+                        "from_email": h.get("from") or lead_email,
+                        "lead_email": lead_email,
+                        "campaign_id": str(campaign_id) if campaign_id else "",
+                        "reply_text": h.get("email_body", ""),  # HTML; Claude tolerates
+                        "subject": sent.get("subject") or h.get("subject", ""),
+                        "email_stats_id": stats_id,
+                        # Lead metadata for caller convenience:
+                        "lead_first_name": lead.get("lead_first_name", ""),
+                        "lead_last_name": lead.get("lead_last_name", ""),
+                        "lead_id": lead.get("email_lead_id", ""),
+                        "reply_time": h.get("time", ""),
+                    })
+            if len(leads) < page_limit:
+                break  # last page
+            offset += page_limit
+        return flattened
 
     def find_lead_by_email(self, email: str) -> dict | None:
         """Look up a Smartlead lead by email address.

@@ -18,11 +18,41 @@ JT — here's what I got done overnight + what's left for you. Read top-down, kn
 
 **GHL custom field audit:** all 20 field IDs in `clients/clear_facility.json` confirmed live in your CFS sub-account. No drift.
 
+**🚨 LIVE TEST CAMPAIGN (sends at 8 AM Central):**
+
+I built a SECOND Smartlead campaign — id `3369156` "CFS TEST — JT verification 2026-05-21" — and **activated it** with 3 leads (jt@ksquaredai.com, jtkolke11@gmail.com, jtkolke@att.net), each with hand-crafted realistic personalization referencing K Squared AI's growth situation. The test campaign has the same 4-touch sequence, all 15 mailboxes attached, and the same webhook registered (id=596730) so replies fire to reply-router. When the schedule kicks in at 08:00 Central, you should see 3 emails arrive across the 3 inboxes from 3 different sender personas (Smartlead rotates Sarah/Mike/Jessica based on mailbox health).
+
+**What to check when the 3 emails arrive:**
+1. Sender name in From: header matches a real persona (Sarah Jones / Mike Brooks / Jessica Martin), not lowercase or weird
+2. Body intro reads naturally: "Quick intro — I'm Jessica with Clear Facility Services" (or Sarah/Mike) — no literal `{{sender_first_name}}` showing
+3. Sign-off `— Jessica` (or Sarah/Mike) — same first name as the sender
+4. Signature block at bottom matches the sending persona (full name + Clear Facility Services, Inc. + 7362 University Ave. NE Suite 310-5 + Fridley, MN 55432)
+5. No literal `{{var}}` strings anywhere in subject or body
+6. Each of the 3 leads should have *different* personalized_subject + personalized_line content (proves per-row merge mapping works)
+7. **End-to-end demo:** reply to ONE of them with "I'm interested" — within ~60 seconds, Slack should ping you with the approval UI link (reply-router → Claude classify → draft response → Slack)
+
+If anything renders wrong, pause campaign 3369156 in Smartlead UI before importing real Cohort 1 leads into 3368966.
+
 **Endpoint smoke tests passed:**
 - `GET /v1/health` → 200
-- `GET /v1/clients/clear_facility/qualify/<contact_id>?token=invalid` → 403 with branded error page (CSRF working)
+- `GET /v1/clients/clear_facility/qualify/VYWFssBcsYaQQ0xEt9KJ?token=<valid>` → 200, form renders correctly with all 12 fields + CSRF
+- Webhook `POST /v1/clients/clear_facility/replies` with empty JSON → 200 (defensive 200-on-malformed works for circuit-breaker safety)
+- Reply-router booking flow live + tested via direct hit
 
-**Top-scorers report (partial):** 8 winners ≥7 from first 277/500 rows. See `reports/cohort_1_top_winners_20260521.csv` and `.md`. The remaining ~223 rows are still scoring at ~32 rows/hr — should finish by ~9 AM.
+**Audit findings (all green):**
+- ✅ All 20 GHL custom field IDs in config confirmed live in CFS sub-account
+- ✅ All stage_id references in clear_facility.json resolve correctly after pipeline refactor (pause_on_stage_ids, qualify/gray/reject stages, all 6 classification routings)
+- ✅ All 5 sending domains have valid SPF / DKIM (google._domainkey selector) / DMARC (p=none, monitor-only — standard starter posture) / MX (smtp.google.com)
+- ✅ Engine output column names match Smartlead's expected merge var names exactly (lowercase: personalized_subject, personalized_line, subject_2/3/4, line_2/3/4)
+- ✅ Reply-router auto-create-skeleton-contact path live for unknown senders (jtkolke11@gmail.com + jtkolke@att.net will get skeleton contacts; jt@ksquaredai.com already exists in GHL)
+- ✅ All required env vars present in Vercel production (CFS_GHL_API_KEY, CFS_SMARTLEAD_API_KEY, CFS_ROUTER_SECRET, CFS_SLACK_WEBHOOK_URL, ANTHROPIC_API_KEY)
+
+**One hole I fixed (commit `7b6cb94` in intent-signal-engine):**
+The `merge_apollo_contacts.py` script was writing only the engine-side column names (`contact_email`, `contact_first_name`, `contact_name`). Smartlead's CSV import only auto-maps `email` / `first_name` / `last_name` to recipient fields — engine names would have landed as opaque custom fields, meaning Smartlead wouldn't know where to send the emails. **Fixed:** merge script now also emits the 3 Smartlead-friendly aliases alongside the engine names. Your morning import flow now works without manual column mapping.
+
+**Dashboard wired:** committed `c2b9909` in dashboard repo — `clients.ts` now has `campaign_ids: ["3368966"]` for CFS so the inbox/campaigns/funnel views all pull from the right campaign once it's activated.
+
+**Top-scorers report (regen'd at ~03:00):** **11 winners ≥7** from 318/500 rows (3 score-8, 8 score-7) + **11 bubble at score 6**. See `reports/cohort_1_top_winners_20260521.csv` and `.md`. Scoring still continues — final cohort 1 winner count likely lands at 17–20 by 9 AM.
 
 ---
 
@@ -83,7 +113,7 @@ This is **NOT a launch blocker** — first launch can ship without it. It only m
 This is the only path-to-live activity.
 
 **A. Apollo export (5 min):**
-Open Apollo. From the 8 winners (and optionally the 10 bubble-score-6 companies if you want to lean wider), do a Contacts export. Filter by company name. Take one decision-maker per company (Director of Facilities / Office Manager / VP Operations / similar). Save as:
+Open Apollo. From the **11 winners** (and optionally the **11 bubble-score-6 companies** if you want to lean wider — and scoring is still running so the final winner pool will likely be 17–20), do a Contacts export. Filter by company name. Take one decision-maker per company (Director of Facilities / Office Manager / VP Operations / similar). Save as:
 ```
 data/clear_facility/cohort_1_contacts_apollo_raw.csv
 ```
@@ -114,7 +144,10 @@ The `--skip-signals --skip-scoring` flags skip the expensive Perplexity/Google/C
 1. Open campaign `CFS Cohort 1 — Cold Outreach` in Smartlead UI
 2. Leads tab → Import CSV
 3. Upload `cohort_1_winners_personalized_20260521.csv`
-4. **Critical:** verify Smartlead recognizes all 8 merge vars: `personalized_subject`, `personalized_line`, `subject_2`, `line_2`, `subject_3`, `line_3`, `subject_4`, `line_4`. If any show as unrecognized, the CSV column header doesn't match (case-sensitive).
+4. **Critical:** verify Smartlead recognizes:
+   - Primary fields auto-mapped: `email`, `first_name`, `last_name`, `company_name` (the merge script writes these aliases now — fixed in commit `7b6cb94`)
+   - 8 custom-field merge vars: `personalized_subject`, `personalized_line`, `subject_2`, `line_2`, `subject_3`, `line_3`, `subject_4`, `line_4`
+   - If any show as unrecognized, the CSV column header doesn't match (case-sensitive)
 
 **E. Test-send before activation (5 min):**
 1. Add yourself to the campaign as a test lead
@@ -163,14 +196,17 @@ The Apollo export should hit these companies (in this order — score 8 trio fir
 - **Gamer Packaging, Inc.** — Minneapolis — mid_market — 20,192 sqft new lease, H2 2026 move-in ✨
 - **Hempel Real Estate** — Minneapolis — mid_market — managing LaSalle Plaza, 60K sqft recent lease activity, open Facilities Manager position ✨
 
-**Score 7:**
+**Score 7 (8 companies):**
 - SPS Commerce — Minneapolis — enterprise — 200K sqft, 15-yr lease renewal Oct 2025, $8M lobby renovation
 - Winthrop & Weinstine, P.A. — Minneapolis — mid_market — 107K sqft in Capella Tower, post-renovation
 - HistoSonics, Inc. — Plymouth — mid_market
 - St. Croix Hospice — Mendota Heights — mid_market
 - Crossroads Properties — Oakdale — mid_market
+- StuartCo — Bloomington — mid_market
+- Larkin Hoffman — Minneapolis — mid_market
+- Cities Management, Inc. — Minneapolis — mid_market
 
-**Bubble (score 6, 10 companies):** in the CSV. Include or hold based on your read.
+**Bubble (score 6, 11 companies):** Mulcahy Co, Viking Engineering, Moss & Barnett P.A., Circuit Check Inc., Harland Medical Systems, Clearfield, CVRx, Resolution Medical, Vibrant Technologies, Monteris Medical, Chandler Industries. In the CSV. Include or hold based on your read. Note: 4 of these are medical-practitioner offices (Harland, CVRx, Resolution Medical, Monteris) — Shawn's ICP allows these (not hospitals, not dentists).
 
 Full reasoning + first-touch personalized subject/opener per company in `cohort_1_top_winners_20260521.md`.
 
@@ -180,30 +216,36 @@ Full reasoning + first-touch personalized subject/opener per company in `cohort_
 
 | Component | State | URL/ID |
 |---|---|---|
-| reply-router latest commit | `102a105` (auto-deployed to Vercel) | `https://reply-router.vercel.app` |
-| Smartlead campaign | created, **not activated** | id=`3368966` |
-| Smartlead webhook | registered, 8 categories | id=`596722` |
-| Smartlead mailboxes attached | 15 / 15 warmed | — |
+| reply-router latest commit | `7f49082` (auto-deployed to Vercel) | `https://reply-router.vercel.app` |
+| intent-signal-engine latest | `7b6cb94` (merge-script alias fix) | — |
+| dashboard latest | `c2b9909` (campaign_ids wired) | `https://ksquared-dashboard.vercel.app/?secret=<value>` |
+| Smartlead PROD campaign | created, **not activated** | id=`3368966` |
+| Smartlead TEST campaign | **ACTIVE — sends 8 AM Central** | id=`3369156`, 3 JT leads |
+| Smartlead webhook (prod) | registered, 8 categories | id=`596722` |
+| Smartlead webhook (test) | registered, 8 categories | id=`596730` |
+| Smartlead mailboxes attached | 15 / 15 warmed (both campaigns) | — |
 | GHL pipeline | refactored (9 stages), needs 20-sec drag-reorder | `pipeline/WaNo1BZftVUmpieCPweb` |
 | GHL custom fields | all 20 live + IDs match config | — |
 | GHL workflow webhook | NOT created (you do this) | — |
-| Scoring | 277/500 done, ~223 in flight ETA ~9 AM | PID 52218 still running |
-| Dashboard | deployed, gated by `DASHBOARD_SECRET` | `https://ksquared-dashboard.vercel.app/?secret=<value>` |
+| GHL contact for jt@ksquaredai.com | exists | id=`VYWFssBcsYaQQ0xEt9KJ` |
+| DNS for all 5 sending domains | SPF/DKIM/DMARC/MX all green | — |
+| Scoring | 318/500 done, ~182 in flight ETA ~9 AM | PID 52218 still running |
 | Browser controller | still running w/ your GHL session | `/tmp/gh_browser.py` PID 60425 |
 
 ---
 
 ## 🎯 Order of operations when you wake up
 
-1. **First coffee:** drag-reorder the 2 GHL pipeline stages (20 sec)
-2. **Second coffee:** create the GHL stage-change workflow webhook (5 min)
-3. **Pull Apollo contacts** for the 8 winners (5 min)
-4. **Run the 2 commands** (merge_apollo_contacts.py → orchestrator --resume) (~15 min including the personalize run)
-5. **Import + multi-persona test-send + activate** the Smartlead campaign (10 min) — at test-send, verify `{{sender_first_name}}` renders title-case in the body
-6. **Send Shawn the business_context confirmation email** (5 min — draft already written)
-7. Watch the first replies start flowing 24–48 hrs later → reply-router handles them
+1. **Check your 3 test inboxes** (~5 min) — at 8 AM Central the TEST campaign 3369156 should fire 3 emails. Verify rendering matches the checklist above. **Reply "I'm interested" to one of them** to test the end-to-end demo flow (Smartlead → webhook → reply-router → Slack approval).
+2. **First coffee:** drag-reorder the 2 GHL pipeline stages (20 sec)
+3. **Second coffee:** create the GHL stage-change workflow webhook (5 min)
+4. **Pull Apollo contacts** for the 11 winners (5 min)
+5. **Run the 2 commands** (merge_apollo_contacts.py → orchestrator --resume) (~15 min including the personalize run)
+6. **Import + verify column mapping + activate** the production Smartlead campaign 3368966 (10 min)
+7. **Send Shawn the business_context confirmation email** (5 min — draft already written)
+8. Watch the first replies start flowing 24–48 hrs later → reply-router handles them
 
-Total morning work: ~45–60 min start-to-launch.
+Total morning work: ~50–70 min start-to-launch including test inbox review.
 
 ---
 

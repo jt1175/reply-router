@@ -89,6 +89,12 @@ def phase2_smartlead_vs_ghl(smartlead, client_config) -> dict:
         logger.warning("phase2 skipped: %s", exc)
         return {"replies_seen": 0, "processed": 0, "skipped": 0,
                 "errors": [{"message_id": "<phase2_skipped>", "reason": str(exc)}]}
+    # Lazy import: keeps the reconciler module decoupled from orchestrator's
+    # top-level (which pulls in fastapi + clients). The strip is the same helper
+    # used on the webhook path — without it, any reply caught by reconciler
+    # (circuit-breaker recovery, missed deliveries) would leak raw <div dir="auto">
+    # markup into Slack and Claude prompts, defeating d151844.
+    from reply_router.orchestrator import _html_to_text
     for r in replies:
         seen += 1
         payload = ReplyPayload(
@@ -96,7 +102,7 @@ def phase2_smartlead_vs_ghl(smartlead, client_config) -> dict:
             from_email=r.get("from_email", ""),
             lead_email=r.get("lead_email", ""),
             campaign_id=r.get("campaign_id", client_config.smartlead.campaign_ids[0]),
-            reply_text=r.get("reply_text") or r.get("body", ""),
+            reply_text=_html_to_text(r.get("reply_text") or r.get("body", "")),
             email_stats_id=r.get("email_stats_id", ""),
             original_subject=r.get("subject", ""),
         )

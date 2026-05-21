@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time as _time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -23,6 +24,38 @@ from reply_router.slack_client import post_classification_notification, post_urg
 from reply_router.smartlead_client import SmartleadClient, SmartleadError
 
 logger = logging.getLogger(__name__)
+
+
+_HTML_BLOCK_END_RE = re.compile(r"</(p|div|h[1-6]|li|blockquote)>", re.IGNORECASE)
+_HTML_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _html_to_text(s: str) -> str:
+    """Convert email HTML body to readable plain text, preserving paragraph breaks.
+
+    Smartlead delivers reply bodies as HTML by default. Without conversion, the
+    raw markup leaks into Slack notifications and Claude prompts — which produced
+    drafts that misread the prospect's intent and Slack messages that looked
+    like a wall of `<div dir="auto">…</div>` markup. This helper is used in
+    `from_smartlead_webhook` so the downstream code path always sees plain text.
+    """
+    if not s:
+        return ""
+    s = _HTML_BLOCK_END_RE.sub("\n\n", s)
+    s = _HTML_BR_RE.sub("\n", s)
+    s = _HTML_TAG_RE.sub("", s)
+    # Decode common HTML entities (no full parser needed — these cover ~99% of
+    # what we see in Smartlead-delivered bodies).
+    s = (s.replace("&nbsp;", " ")
+           .replace("&#39;", "'").replace("&apos;", "'")
+           .replace("&quot;", '"')
+           .replace("&amp;", "&")
+           .replace("&lt;", "<").replace("&gt;", ">"))
+    # Collapse runs of >2 blank lines + trim trailing spaces.
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = re.sub(r"[ \t]+(?=\n)", "", s)
+    return s.strip()
 
 
 @dataclass
@@ -89,7 +122,7 @@ class ReplyPayload:
                 or ""
             ),
             campaign_id=str(payload.get("campaign_id") or ""),
-            reply_text=str(
+            reply_text=_html_to_text(
                 reply.get("text")
                 or reply.get("email_body")
                 or payload.get("reply_text")
@@ -108,9 +141,15 @@ class ReplyPayload:
                 or reply.get("subject")
                 or ""
             ),
+            # NOTE: previously this fell back to `to_name`, but Smartlead's
+            # `to_name` is the LEAD's name (the email RECIPIENT) — using it as
+            # sender_persona caused the AI to think the lead was signing the
+            # email and emit generic "The Clear Facility Team" sign-offs.
+            # Now: explicit sender_persona/sender_name only; downstream falls
+            # back to a sensible default if absent. TODO: resolve from
+            # email_account_id via Smartlead /email-accounts/{id} lookup.
             sender_persona=str(
-                payload.get("to_name")
-                or payload.get("sender_persona")
+                payload.get("sender_persona")
                 or payload.get("sender_name")
                 or ""
             ),
@@ -535,7 +574,11 @@ def _generate_response(
             reply_text=payload.reply_text,
             account=_to_account(contact),
             business_context=business_context,
-            sender_persona_name=payload.sender_persona or "the team",
+            # If we don't know the actual sender persona (Sarah/Mike/Jessica),
+            # fall back to a first-person voice with no name — the responder
+            # prompt is built to handle this gracefully and avoids inventing
+            # a generic "Clear Facility Team" signoff.
+            sender_persona_name=payload.sender_persona or "",
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         )
     raise ValueError(f"unsupported classification: {classification}")

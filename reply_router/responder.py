@@ -219,7 +219,7 @@ LOAD-BEARING RULES (do not violate; failures cause test failures):
 - NEVER claim a credential not in the CREDENTIALS YOU MAY REFERENCE list above. If the list is "(none confirmed...)", do not reference any credential, certification, insurance status, or year-founded claim.
 - Keep it to 3-5 sentences max.
 - End with the booking link as the next step — UNLESS the response naturally doesn't lead there (e.g., a flat-no objection).
-- Sign off as {sender_persona_name}.
+- {sender_signoff_instruction}
 
 TONE GUIDANCE:
 - Be helpful and informative, not evasive.
@@ -250,6 +250,26 @@ def generate_contextual(
     # since the schema declares only the core 6 fields; everything else flows through).
     bc_extras = business_context.model_dump()
 
+    # Sender sign-off behavior: if we know the actual mailbox persona (Sarah/
+    # Mike/Jessica), instruct the AI to use that first name. If we don't (we
+    # only know it's one of the SDR personas at Clear Facility Services), tell
+    # the AI to sign with a generic short closing like "Best," with NO name —
+    # so the live mailbox signature appended downstream (or read on receipt)
+    # carries the persona identity. Avoids the "The Clear Facility Team"
+    # fake-collective signoff that was making drafts feel impersonal.
+    if sender_persona_name and sender_persona_name not in ("the team", "team", ""):
+        first = sender_persona_name.split()[0]
+        sender_signoff_instruction = (
+            f"Sign off with just '{first}' on its own line after 'Best,' — "
+            f"no last name, no team/collective sign-off, no company name."
+        )
+    else:
+        sender_signoff_instruction = (
+            "End with just 'Best,' on its own line — do NOT add a name, "
+            "team, or collective sign-off. The mailbox signature carries "
+            "the sender's identity."
+        )
+
     prompt = CONTEXTUAL_SYSTEM_PROMPT.format(
         company_name=business_context.company_name,
         service_area=business_context.service_area,
@@ -264,7 +284,7 @@ def generate_contextual(
         value_props=_format_value_props(bc_extras.get("value_props")),
         credentials=_format_credentials(bc_extras.get("credential_mentions")),
         common_objections=_format_common_objections(bc_extras.get("common_objections")),
-        sender_persona_name=sender_persona_name,
+        sender_signoff_instruction=sender_signoff_instruction,
     )
 
     client = Anthropic(api_key=anthropic_api_key)

@@ -9,6 +9,11 @@ from reply_router.config import BusinessContext
 from reply_router.responder import (
     UNSUBSCRIBE_STATIC,
     ResponderResult,
+    _clean_value_prop,
+    _format_common_objections,
+    _format_credentials,
+    _format_value_props,
+    _is_unconfirmed,
     generate_template,
     requires_shadow,
 )
@@ -208,3 +213,176 @@ def test_contextual_rejects_non_contextual_classification():
             account={}, business_context=_bc(),
             sender_persona_name="S", anthropic_api_key="k",
         )
+
+
+# --- AWAITING_SHAWN_CONFIRM filter tests ---
+
+def test_is_unconfirmed_detects_awaiting_shawn():
+    assert _is_unconfirmed("JT_DRAFT_AWAITING_SHAWN_CONFIRM — some claim")
+    assert _is_unconfirmed("AWAITING_SHAWN something")
+
+
+def test_is_unconfirmed_detects_tbd_prefix():
+    assert _is_unconfirmed("TBD_CFS_PHONE")
+    assert _is_unconfirmed("TBD_confirm_with_Shawn — typical: 'something'")
+
+
+def test_is_unconfirmed_false_for_confirmed_value():
+    assert not _is_unconfirmed("Fully insured and bonded; happy to share a COI.")
+    assert not _is_unconfirmed("Specialized auto-scrubber equipment")
+
+
+def test_is_unconfirmed_handles_non_string():
+    assert not _is_unconfirmed(None)
+    assert not _is_unconfirmed(["list", "not string"])
+
+
+def test_clean_value_prop_strips_typical_prefix():
+    cleaned = _clean_value_prop("TBD_confirm — typical: 'Real content here.'")
+    assert cleaned == "Real content here."
+
+
+def test_clean_value_prop_strips_jt_draft_prefix():
+    cleaned = _clean_value_prop("JT_DRAFT_2026-05-20 — Real content here.")
+    assert cleaned == "Real content here."
+
+
+def test_clean_value_prop_passes_through_clean_values():
+    assert _clean_value_prop("Already a clean string") == "Already a clean string"
+
+
+# --- _format_value_props ---
+
+def test_format_value_props_drops_unconfirmed_entries():
+    props = [
+        "Specialized auto-scrubber equipment for hard-floor properties",
+        "TBD_confirm_with_Shawn — typical: 'not surfaced'",
+        "Twin Cities owner-operated",
+    ]
+    out = _format_value_props(props)
+    assert "auto-scrubber" in out
+    assert "Twin Cities" in out
+    assert "TBD_" not in out
+    assert "not surfaced" not in out
+
+
+def test_format_value_props_empty_when_all_unconfirmed():
+    props = ["TBD_a", "AWAITING_SHAWN something"]
+    assert _format_value_props(props) == "(none listed)"
+
+
+def test_format_value_props_handles_non_list():
+    assert _format_value_props(None) == "(none listed)"
+    assert _format_value_props("not a list") == "(none listed)"
+
+
+# --- _format_credentials (safety-critical) ---
+
+def test_format_credentials_returns_none_when_all_awaiting():
+    """When every credential is marked AWAITING, output must explicitly tell Claude NOT to reference any."""
+    creds = {
+        "issa": "JT_DRAFT_AWAITING_SHAWN_CONFIRM — ISSA-certified team",
+        "insurance": "JT_DRAFT_AWAITING_SHAWN_CONFIRM — fully insured",
+    }
+    out = _format_credentials(creds)
+    assert "none confirmed" in out
+    assert "do not reference" in out
+    assert "ISSA" not in out
+    assert "insured" not in out
+
+
+def test_format_credentials_surfaces_only_confirmed():
+    creds = {
+        "issa": "JT_DRAFT_AWAITING_SHAWN_CONFIRM — ISSA-certified",
+        "insurance": "Fully insured and bonded; happy to share a COI.",
+        "background_checks": "All on-site staff background-checked and W-2 employees.",
+    }
+    out = _format_credentials(creds)
+    assert "insured" in out
+    assert "background-checked" in out
+    assert "ISSA" not in out
+
+
+def test_format_credentials_skips_doc_keys():
+    """Underscore-prefixed keys are documentation, not real credentials."""
+    creds = {
+        "_doc": "Confirmed creds: ISSA, etc.",  # This should NOT leak — starts with _
+        "insurance": "Fully insured.",
+    }
+    out = _format_credentials(creds)
+    assert "Confirmed creds" not in out
+    assert "Fully insured." in out
+
+
+# --- _format_common_objections ---
+
+def test_format_objections_includes_all_confirmed_keys():
+    obj = {
+        "already_have_vendor": "Totally understood — most folks already have someone.",
+        "send_pricing_first": "Pricing hinges on a walkthrough.",
+    }
+    out = _format_common_objections(obj)
+    assert "already_have_vendor" in out
+    assert "send_pricing_first" in out
+    assert "already have someone" in out
+
+
+def test_format_objections_skips_unconfirmed():
+    obj = {
+        "real": "Use this one verbatim.",
+        "fake": "JT_DRAFT_AWAITING_SHAWN_CONFIRM — should be hidden",
+    }
+    out = _format_common_objections(obj)
+    assert "Use this one" in out
+    assert "should be hidden" not in out
+
+
+def test_format_objections_empty_returns_sentinel():
+    assert _format_common_objections({}) == "(none configured)"
+    assert _format_common_objections(None) == "(none configured)"
+
+
+# --- End-to-end with real cfg fixture ---
+
+def test_contextual_prompt_uses_business_context_correctly():
+    """Verify the assembled prompt: includes confirmed value_props, excludes AWAITING credentials."""
+    from reply_router.responder import generate_contextual
+    bc_data = dict(
+        company_name="Clear Facility Services",
+        service_area="Twin Cities",
+        services_offered=["office cleaning"],
+        services_not_offered=["restaurants"],
+        pricing_response="Depends on size.",
+        booking_link="https://example.com/book",
+        # Extras (pydantic allows them via extra="allow"):
+        value_props=["Auto-scrubber equipment", "W-2 employees not subcontractors"],
+        credential_mentions={
+            "issa": "JT_DRAFT_AWAITING_SHAWN_CONFIRM — ISSA-certified",
+            "insurance": "Fully insured.",
+        },
+        common_objections={
+            "already_have_vendor": "Totally understood — happy to be on your bench.",
+        },
+    )
+    bc = BusinessContext(**bc_data)
+
+    with patch("reply_router.responder.Anthropic") as mock_anthropic_cls:
+        mock_anthropic_cls.return_value = _mock_claude("Test response that is long enough to pass length check.")
+        generate_contextual(
+            classification="objection", reply_text="we already have a vendor",
+            account={"contact_name": "Pat", "company_name": "Acme", "contact_title": "GM"},
+            business_context=bc, sender_persona_name="Sarah",
+            anthropic_api_key="k",
+        )
+        # Inspect what was sent to Claude
+        sent_prompt = mock_anthropic_cls.return_value.messages.create.call_args.kwargs["messages"][0]["content"]
+        # Confirmed value_props present
+        assert "Auto-scrubber equipment" in sent_prompt
+        assert "W-2 employees" in sent_prompt
+        # Confirmed credential present, unconfirmed NOT
+        assert "Fully insured" in sent_prompt
+        assert "ISSA" not in sent_prompt
+        # Confirmed objection guidance present
+        assert "happy to be on your bench" in sent_prompt
+        # Rules text present
+        assert "NEVER claim a credential" in sent_prompt

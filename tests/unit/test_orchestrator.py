@@ -1374,7 +1374,19 @@ def test_vercel_base_url_fallback_when_unset(monkeypatch):
 def test_from_smartlead_webhook_with_real_payload_shape():
     """Locks the field mapping for the actual Smartlead webhook payload
     shape we captured during sandbox testing. Smartlead uses to_email /
-    to_name / stats_id — NOT lead_email / sender_name / email_stats_id."""
+    to_name / stats_id — NOT lead_email / sender_name / email_stats_id.
+
+    IMPORTANT (2026-05-21): `to_name` is the LEAD's name (the recipient of
+    the original outbound), NOT the sender persona. Earlier versions of
+    this code aliased to_name → sender_persona, which caused Claude to be
+    prompted "Sign off as JT Kolke" — Claude resolved that contradiction
+    by inventing a generic 'The Clear Facility Team' collective signoff.
+    The real sender persona (Sarah/Mike/Jessica) must be resolved from
+    `email_account_id` via Smartlead /email-accounts/{id} (TODO post-launch).
+    For now: sender_persona is empty when only to_name is provided, and
+    the responder uses a name-less 'Best,' close that lets the per-mailbox
+    signature carry sender identity downstream.
+    """
     payload = {
         "campaign_id": 3360292,
         "stats_id": "7b27fb71-588d-4afa-b185-0259716ff44b",
@@ -1406,7 +1418,8 @@ def test_from_smartlead_webhook_with_real_payload_shape():
     assert rp.reply_text == "Thumbs up!"
     assert rp.email_stats_id == "7b27fb71-588d-4afa-b185-0259716ff44b"
     assert rp.original_subject == "Re: Router sandbox test"
-    assert rp.sender_persona == "JT Kolke"
+    # Empty — `to_name` is the LEAD's name, NOT the sender persona. See docstring.
+    assert rp.sender_persona == ""
 
 
 def test_from_smartlead_webhook_falls_through_none_values():

@@ -44,6 +44,23 @@ app = FastAPI(title="reply-router", version="0.1.0")
 logger = logging.getLogger("api.index")
 
 
+def _draft_to_html(text: str) -> str:
+    """Wrap a plain-text AI draft in minimal HTML so Smartlead's reply-email-thread
+    renders paragraph breaks in Gmail. Without this, blank-line separated paragraphs
+    collapse into a wall of text on the recipient's side (Smartlead treats
+    `email_body` as HTML and strips whitespace formatting).
+
+    Idempotent: if the input already contains HTML tags, returns it unchanged.
+    """
+    if not text or not text.strip():
+        return text
+    lo = text.lower()
+    if "<p>" in lo or "<div>" in lo or "<br" in lo:
+        return text
+    paragraphs = [p for p in text.split("\n\n") if p.strip()]
+    return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs)
+
+
 def _clients_dir() -> Path:
     return Path(os.environ.get("REPLY_ROUTER_CLIENTS_DIR", "clients"))
 
@@ -277,7 +294,7 @@ async def post_approval_send(
         smartlead.send_reply_in_thread(
             campaign_id=reply_campaign_id,
             email_stats_id=email_stats_id,
-            body=draft_text,
+            body=_draft_to_html(draft_text),
             reply_message_id=reply_message_id,
         )
     except SmartleadError as exc:

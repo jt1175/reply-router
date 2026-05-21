@@ -25,6 +25,14 @@ from reply_router.approvals import (
 from reply_router.config import ConfigError, load_and_validate_all, load_client_config
 from reply_router.ghl_client import GHLClient
 from reply_router.orchestrator import ReplyPayload, process_reply
+from reply_router.qualification_ui import (
+    render_confirmation, render_error, render_form, render_gray_zone,
+    render_reject, render_slot_picker,
+)
+from reply_router.qualifier import (
+    FAIL_SAFE_RESULT, classify_form, form_csrf, verify_form_csrf,
+    verify_url_token,
+)
 from reply_router.reconciler import reconcile_client
 from reply_router.slack_client import _post as _slack_post
 from reply_router.smartlead_client import SmartleadClient, SmartleadError
@@ -272,6 +280,362 @@ async def post_approval_discard(
         reply_email_stats_id_field_id=fids["pending_reply_email_stats_id"],
     )
     return HTMLResponse("<h1>Discarded</h1><p>The draft was cleared without sending.</p>")
+
+
+# ─── Qualification booking flow ──────────────────────────────────────────────
+
+def _qualification_is_configured(cfg) -> tuple[bool, str]:
+    """Check that this client has the qualification flow fully wired up.
+
+    Returns (True, '') if configured; (False, reason) otherwise. Reasons name
+    the specific field so JT can see exactly what's missing.
+    """
+    if not cfg.ghl.calendar_id or cfg.ghl.calendar_id.startswith("TBD_"):
+        return False, "ghl.calendar_id not set (placeholder TBD_ value)"
+    if not cfg.qualification_rubric:
+        return False, "qualification_rubric not set"
+    if not cfg.qualify_pipeline_stage_id or cfg.qualify_pipeline_stage_id.startswith("TBD_"):
+        return False, "qualify_pipeline_stage_id not set (placeholder TBD_ value)"
+    if not cfg.gray_zone_pipeline_stage_id or cfg.gray_zone_pipeline_stage_id.startswith("TBD_"):
+        return False, "gray_zone_pipeline_stage_id not set (placeholder TBD_ value)"
+    if not cfg.reject_pipeline_stage_id or cfg.reject_pipeline_stage_id.startswith("TBD_"):
+        return False, "reject_pipeline_stage_id not set (placeholder TBD_ value)"
+    for key in ("qualification_form_answers", "qualification_result", "qualification_submitted_at"):
+        v = cfg.ghl.custom_field_ids.get(key, "")
+        if not v or v.startswith("TBD_"):
+            return False, f"ghl.custom_field_ids.{key} not set (placeholder TBD_ value)"
+    return True, ""
+
+
+def _contact_to_account_context(contact: dict) -> dict:
+    """Extract enrichment context from a GHL contact's customFields for the qualifier."""
+    by_id = {cf["id"]: cf.get("value") for cf in contact.get("customFields") or []}
+    # Pull whatever's there — qualifier handles missing fields gracefully.
+    return {
+        "company_name": contact.get("companyName") or "",
+        "first_name": contact.get("firstName") or "",
+        "email": contact.get("email") or "",
+        "title": contact.get("title") or contact.get("companyTitle") or "",
+        "ghl_custom_fields_by_id": by_id,
+    }
+
+
+def _parse_free_slots(ghl_response: dict, max_slots: int = 12) -> list[dict]:
+    """Parse GHL's free-slots map into a flat list of {start_iso, label} dicts.
+
+    GHL returns a map keyed by ISO date (YYYY-MM-DD), each holding a `slots` list
+    of ISO datetimes. Returns the first `max_slots` slots across all dates.
+    Defensive against shape variation: skips keys it can't parse.
+    """
+    from datetime import datetime
+    slots: list[dict] = []
+    if not isinstance(ghl_response, dict):
+        return slots
+    for date_key, day_data in ghl_response.items():
+        if not date_key or len(date_key) < 10:  # skip non-date keys like "_dates_"
+            continue
+        if not isinstance(day_data, dict):
+            continue
+        for slot_iso in day_data.get("slots") or []:
+            if not isinstance(slot_iso, str):
+                continue
+            try:
+                dt = datetime.fromisoformat(slot_iso.replace("Z", "+00:00"))
+                label = dt.strftime("%a %b %d, %-I:%M %p")
+            except (ValueError, TypeError):
+                label = slot_iso
+            slots.append({"start_iso": slot_iso, "label": label})
+            if len(slots) >= max_slots:
+                return slots
+    return slots
+
+
+@app.get("/v1/clients/{client_id}/qualify/{contact_id}", response_class=HTMLResponse)
+def get_qualification_form(client_id: str, contact_id: str, token: str = Query(default="")):
+    """Render the qualification form. URL token authenticates the link (14-day TTL)."""
+    cfg = _load_client(client_id)
+    ok, reason = _qualification_is_configured(cfg)
+    if not ok:
+        logger.warning("qualification not configured for client=%s: %s", client_id, reason)
+        return HTMLResponse(
+            render_error(cfg.client_display_name, f"This booking flow is not yet available. (admin: {reason})"),
+            status_code=503,
+        )
+
+    secret = os.environ.get(cfg.auth.router_secret_env, "")
+    if not verify_url_token(secret, contact_id, token):
+        logger.warning("invalid url_token for contact=%s", contact_id)
+        return HTMLResponse(
+            render_error(cfg.client_display_name, "This booking link has expired or is invalid. Please reply to the original email and we'll send a fresh one."),
+            status_code=403,
+        )
+
+    ghl = _build_ghl(cfg)
+    contact = ghl.get_contact_by_id(contact_id)
+    if not contact:
+        return HTMLResponse(
+            render_error(cfg.client_display_name, "We couldn't find your record on our side. Please reply to the original email."),
+            status_code=404,
+        )
+
+    iat = int(time.time())
+    csrf = form_csrf(secret, contact_id, iat)
+    action_path = f"/v1/clients/{client_id}/qualify/{contact_id}"
+    return HTMLResponse(
+        render_form(
+            contact=contact,
+            token=token,
+            csrf=csrf,
+            form_issued_at_unix=iat,
+            company_display_name=cfg.client_display_name,
+            action_path=action_path,
+        ),
+        headers={"Referrer-Policy": "no-referrer"},
+    )
+
+
+@app.post("/v1/clients/{client_id}/qualify/{contact_id}", response_class=HTMLResponse)
+async def post_qualification_form(
+    client_id: str,
+    contact_id: str,
+    request: Request,
+    token: str = Form(""),
+    csrf: str = Form(""),
+    form_issued_at_unix: str = Form("0"),
+    building_size_sqft: str = Form(""),
+    building_type: str = Form(""),
+    current_vendor_status: str = Form(""),
+    decision_timeline: str = Form(""),
+    monthly_budget_range: str = Form(""),
+    best_phone: str = Form(""),
+    additional_context: str = Form(""),
+):
+    """Process form submission → run Claude routing → branch to qualify/gray/reject."""
+    import json as _json
+    cfg = _load_client(client_id)
+    ok, reason = _qualification_is_configured(cfg)
+    if not ok:
+        return HTMLResponse(
+            render_error(cfg.client_display_name, f"This booking flow is not yet available. (admin: {reason})"),
+            status_code=503,
+        )
+
+    secret = os.environ.get(cfg.auth.router_secret_env, "")
+    if not verify_url_token(secret, contact_id, token):
+        raise HTTPException(403, "url_token_invalid_or_expired")
+    try:
+        iat = int(form_issued_at_unix)
+    except ValueError:
+        iat = 0
+    if not verify_form_csrf(secret, contact_id, iat, csrf):
+        raise HTTPException(403, "csrf_invalid_or_expired")
+
+    # Collect form answers
+    try:
+        sqft_int = int(building_size_sqft) if building_size_sqft else 0
+    except ValueError:
+        sqft_int = 0
+    form_answers = {
+        "building_size_sqft": sqft_int,
+        "building_type": building_type,
+        "current_vendor_status": current_vendor_status,
+        "decision_timeline": decision_timeline,
+        "monthly_budget_range": monthly_budget_range,
+        "best_phone": best_phone,
+        "additional_context": additional_context,
+    }
+
+    ghl = _build_ghl(cfg)
+    contact = ghl.get_contact_by_id(contact_id)
+    if not contact:
+        return HTMLResponse(
+            render_error(cfg.client_display_name, "Contact not found."),
+            status_code=404,
+        )
+
+    # Run Claude routing
+    account_context = _contact_to_account_context(contact)
+    decision = classify_form(
+        form_answers=form_answers,
+        account_context=account_context,
+        business_context=cfg.business_context,
+        rubric=cfg.qualification_rubric,
+        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+    )
+
+    # Write form answers + decision to GHL (best-effort; don't block UX on GHL failure)
+    fids = cfg.ghl.custom_field_ids
+    try:
+        ghl.update_contact(contact_id, custom_fields={
+            fids["qualification_form_answers"]: _json.dumps(form_answers),
+            fids["qualification_result"]: decision["decision"],
+            fids["qualification_submitted_at"]: datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.exception("GHL field write failed for contact=%s (continuing): %s", contact_id, exc)
+
+    # Branch on decision
+    if decision["decision"] == "qualify":
+        # Fetch free slots, render slot picker
+        from datetime import timedelta
+        now_ms = int(time.time() * 1000)
+        end_ms = now_ms + 14 * 24 * 3600 * 1000  # 14-day booking window
+        try:
+            ghl_slots = ghl.get_calendar_free_slots(
+                calendar_id=cfg.ghl.calendar_id,
+                start_date_unix_ms=now_ms,
+                end_date_unix_ms=end_ms,
+                timezone="America/Chicago",
+            )
+            free_slots = _parse_free_slots(ghl_slots)
+        except Exception as exc:
+            logger.exception("free-slots fetch failed for contact=%s: %s", contact_id, exc)
+            free_slots = []
+
+        # Generate a fresh form CSRF for the slot-pick POST
+        new_iat = int(time.time())
+        new_csrf = form_csrf(secret, contact_id, new_iat)
+        booking_action = f"/v1/clients/{client_id}/qualify/{contact_id}/book"
+        return HTMLResponse(
+            render_slot_picker(
+                contact=contact,
+                token=token,
+                csrf=new_csrf,
+                form_issued_at_unix=new_iat,
+                company_display_name=cfg.client_display_name,
+                booking_action_path=booking_action,
+                free_slots=free_slots,
+            ),
+            headers={"Referrer-Policy": "no-referrer"},
+        )
+
+    if decision["decision"] == "gray_zone":
+        try:
+            ghl.move_to_pipeline_stage(
+                contact_id, cfg.ghl.pipeline_id, cfg.gray_zone_pipeline_stage_id
+            )
+        except Exception:
+            logger.exception("gray_zone stage move failed for contact=%s", contact_id)
+        # Slack notify
+        slack_url = os.environ.get(cfg.slack.incoming_webhook_url_env, "")
+        if slack_url:
+            try:
+                _slack_post(slack_url, {
+                    "text": (
+                        f":warning: Gray-zone qualification — manual review needed.\n"
+                        f"Contact: {contact.get('email') or contact_id}\n"
+                        f"Company: {contact.get('companyName') or '—'}\n"
+                        f"Reasoning: {decision.get('reasoning', '')[:300]}"
+                    )
+                })
+            except Exception:
+                pass
+        return HTMLResponse(
+            render_gray_zone(contact, cfg.client_display_name),
+            headers={"Referrer-Policy": "no-referrer"},
+        )
+
+    # reject
+    try:
+        ghl.move_to_pipeline_stage(
+            contact_id, cfg.ghl.pipeline_id, cfg.reject_pipeline_stage_id
+        )
+    except Exception:
+        logger.exception("reject stage move failed for contact=%s", contact_id)
+    return HTMLResponse(
+        render_reject(contact, cfg.client_display_name),
+        headers={"Referrer-Policy": "no-referrer"},
+    )
+
+
+@app.post("/v1/clients/{client_id}/qualify/{contact_id}/book", response_class=HTMLResponse)
+async def post_qualification_book(
+    client_id: str,
+    contact_id: str,
+    token: str = Form(""),
+    csrf: str = Form(""),
+    form_issued_at_unix: str = Form("0"),
+    selected_slot_iso: str = Form(""),
+):
+    """Create the GHL appointment + move stage + render confirmation."""
+    from datetime import datetime as _dt
+    cfg = _load_client(client_id)
+    ok, reason = _qualification_is_configured(cfg)
+    if not ok:
+        return HTMLResponse(
+            render_error(cfg.client_display_name, f"Booking is not yet available. (admin: {reason})"),
+            status_code=503,
+        )
+
+    secret = os.environ.get(cfg.auth.router_secret_env, "")
+    if not verify_url_token(secret, contact_id, token):
+        raise HTTPException(403, "url_token_invalid_or_expired")
+    try:
+        iat = int(form_issued_at_unix)
+    except ValueError:
+        iat = 0
+    if not verify_form_csrf(secret, contact_id, iat, csrf):
+        raise HTTPException(403, "csrf_invalid_or_expired")
+
+    if not selected_slot_iso:
+        return HTMLResponse(
+            render_error(cfg.client_display_name, "No time slot selected."),
+            status_code=400,
+        )
+
+    ghl = _build_ghl(cfg)
+    contact = ghl.get_contact_by_id(contact_id)
+    if not contact:
+        return HTMLResponse(
+            render_error(cfg.client_display_name, "Contact not found."),
+            status_code=404,
+        )
+
+    title = f"Discovery Call: {contact.get('companyName') or contact.get('email') or contact_id}"
+    try:
+        ghl.create_appointment(
+            calendar_id=cfg.ghl.calendar_id,
+            contact_id=contact_id,
+            start_time_iso=selected_slot_iso,
+            title=title,
+            appointment_status="confirmed",
+            to_notify=True,
+        )
+    except Exception as exc:
+        logger.exception("create_appointment failed for contact=%s slot=%s: %s",
+                         contact_id, selected_slot_iso, exc)
+        return HTMLResponse(
+            render_error(
+                cfg.client_display_name,
+                "We couldn't lock in that time. Please reply to the original email and we'll book by hand.",
+            ),
+            status_code=502,
+        )
+
+    try:
+        ghl.move_to_pipeline_stage(
+            contact_id, cfg.ghl.pipeline_id, cfg.qualify_pipeline_stage_id
+        )
+    except Exception:
+        logger.exception("qualify stage move failed for contact=%s", contact_id)
+
+    # Format slot for display
+    try:
+        dt = _dt.fromisoformat(selected_slot_iso.replace("Z", "+00:00"))
+        appt_label = dt.strftime("%A, %B %-d at %-I:%M %p (%Z)")
+    except (ValueError, TypeError):
+        appt_label = selected_slot_iso
+
+    company_phone = getattr(cfg.business_context, "phone", None) if hasattr(cfg.business_context, "phone") else None
+    return HTMLResponse(
+        render_confirmation(
+            contact=contact,
+            appointment_label=appt_label,
+            company_display_name=cfg.client_display_name,
+            company_phone=company_phone,
+        ),
+        headers={"Referrer-Policy": "no-referrer"},
+    )
 
 
 # ─── Nightly reconciler cron ─────────────────────────────────────────────────

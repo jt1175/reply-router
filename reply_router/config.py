@@ -29,6 +29,7 @@ class GHLConfig(BaseModel):
     sub_account_id: str
     api_key_env: str
     pipeline_id: str
+    calendar_id: str | None = None   # Required for qualification booking flow; endpoint checks at runtime
     custom_field_ids: dict[str, str]
 
     @field_validator("custom_field_ids")
@@ -45,6 +46,10 @@ class GHLConfig(BaseModel):
             # shadow reply would 4xx or send non-threaded. See spec §4.3 + Task 4.1e.
             "pending_reply_message_id", "pending_reply_email_stats_id",
         }
+        # Note: qualification_form_answers/result/submitted_at are required only when the
+        # qualification booking flow is wired up. The endpoint checks for their presence
+        # at request time; schema-level absence is permitted so existing test fixtures
+        # without the booking flow continue to pass.
         missing = required - v.keys()
         if missing:
             raise ValueError(f"custom_field_ids missing required keys: {sorted(missing)}")
@@ -94,6 +99,13 @@ class ClientConfig(BaseModel):
     monitoring_until: str   # ISO date string
     classification_actions: dict[str, ClassificationAction]
     business_context: BusinessContext
+    # Qualification booking flow — optional at schema level (endpoint checks at runtime).
+    # All four must be populated for the /qualify/* endpoints to function; existing test
+    # fixtures + clients without the booking flow continue to validate without these.
+    qualification_rubric: str | None = None
+    qualify_pipeline_stage_id: str | None = None
+    gray_zone_pipeline_stage_id: str | None = None
+    reject_pipeline_stage_id: str | None = None
 
     # Allow underscore-prefixed _doc_* and _pending_domains keys
     model_config = {"extra": "allow"}

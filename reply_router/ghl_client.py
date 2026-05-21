@@ -336,3 +336,100 @@ class GHLClient:
                 f"value for field_id={field_id} (got {len(contacts)})"
             )
         return contacts
+
+    # ─── Calendar / appointment API ─────────────────────────────────────────
+    # Endpoint shapes verified against the GHL OpenAPI spec at
+    # github.com/GoHighLevel/highlevel-api-docs (apps/calendars.json).
+    # If calls 4xx with a version error, flip Version header to 2023-02-21 here
+    # (the calendars API doc page advertises that version specifically).
+
+    def get_calendar_free_slots(
+        self,
+        calendar_id: str,
+        start_date_unix_ms: int,
+        end_date_unix_ms: int,
+        timezone: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return GHL's availability map for a calendar between two epoch-ms timestamps.
+
+        Per GHL OpenAPI spec: response is an availability map keyed by ISO date
+        (YYYY-MM-DD). Date range cannot exceed 31 days — caller must enforce.
+
+        Args:
+            calendar_id: GHL calendar resource ID
+            start_date_unix_ms: window start (epoch milliseconds, NOT seconds)
+            end_date_unix_ms: window end (epoch milliseconds, NOT seconds)
+            timezone: optional IANA tz name (e.g. "America/Chicago")
+            user_id: optional GHL user ID (for team calendars)
+        """
+        if end_date_unix_ms - start_date_unix_ms > 31 * 24 * 3600 * 1000:
+            raise ValueError("free-slots date range exceeds 31-day GHL limit")
+        url = f"{GHL_BASE_URL}/calendars/{calendar_id}/free-slots"
+        params: dict[str, Any] = {
+            "startDate": start_date_unix_ms,
+            "endDate": end_date_unix_ms,
+        }
+        if timezone:
+            params["timezone"] = timezone
+        if user_id:
+            params["userId"] = user_id
+        try:
+            resp = requests.get(url, headers=self._headers(), params=params, timeout=15)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"GHL get_calendar_free_slots failed: {exc}") from exc
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"GHL get_calendar_free_slots failed: status={resp.status_code} "
+                f"body={resp.text[:200]}"
+            )
+        return resp.json()
+
+    def create_appointment(
+        self,
+        calendar_id: str,
+        contact_id: str,
+        start_time_iso: str,
+        end_time_iso: str | None = None,
+        title: str | None = None,
+        appointment_status: str = "confirmed",
+        assigned_user_id: str | None = None,
+        to_notify: bool = True,
+    ) -> dict[str, Any]:
+        """Create a calendar appointment via POST /calendars/events/appointments.
+
+        Required body per OpenAPI: calendarId, locationId, contactId, startTime.
+        startTime must be ISO 8601 with timezone offset (e.g. '2026-05-26T10:00:00-05:00').
+
+        Args:
+            start_time_iso: ISO 8601 with TZ offset
+            end_time_iso: optional; GHL infers from calendar.meetingDuration if omitted
+            title: appointment title (defaults to "Discovery Call" if None)
+            appointment_status: 'new' | 'confirmed' | 'cancelled' | 'showed' | 'noshow' | 'invalid'
+            to_notify: if False, GHL automations skip (set True for real bookings)
+        """
+        url = f"{GHL_BASE_URL}/calendars/events/appointments"
+        body: dict[str, Any] = {
+            "calendarId": calendar_id,
+            "locationId": self.sub_account_id,
+            "contactId": contact_id,
+            "startTime": start_time_iso,
+            "appointmentStatus": appointment_status,
+            "toNotify": to_notify,
+        }
+        if end_time_iso:
+            body["endTime"] = end_time_iso
+        if title:
+            body["title"] = title
+        if assigned_user_id:
+            body["assignedUserId"] = assigned_user_id
+        try:
+            resp = requests.post(url, headers=self._headers(), json=body, timeout=15)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"GHL create_appointment failed: {exc}") from exc
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(
+                f"GHL create_appointment failed: status={resp.status_code} "
+                f"body={resp.text[:300]}"
+            )
+        return resp.json()

@@ -486,6 +486,22 @@ def _ghl_dnc_with_retry(ghl, contact_id: str, slack_url: str, contact: dict, pay
     raise RuntimeError(f"GHL DNC failed after 3 retries: {last_err}")
 
 
+def _render_booking_link(client_config, contact_id: str) -> str:
+    """Substitute {contact_id} and {token} placeholders in business_context.booking_link.
+
+    The qualification URL token is signed with the client's router secret and
+    encodes a 14-day TTL via verify_url_token. Returns the raw link unchanged if
+    no placeholders are present (e.g., still set to PLACEHOLDER sentinel pre-launch).
+    """
+    raw = client_config.business_context.booking_link or ""
+    if "{contact_id}" not in raw and "{token}" not in raw:
+        return raw
+    from reply_router.qualifier import url_token as _url_token
+    secret = os.environ.get(client_config.auth.router_secret_env, "")
+    tok = _url_token(secret, contact_id, int(time.time()))
+    return raw.replace("{contact_id}", contact_id).replace("{token}", tok)
+
+
 def _generate_response(
     classification: str,
     payload: ReplyPayload,
@@ -493,18 +509,24 @@ def _generate_response(
     client_config,
 ):
     """Dispatch to template or contextual responder based on classification."""
+    # Render per-contact booking link (no-op if config is still PLACEHOLDER)
+    rendered_link = _render_booking_link(client_config, contact["id"])
+    business_context = client_config.business_context.model_copy(
+        update={"booking_link": rendered_link}
+    )
+
     if classification == "unsubscribe":
         return generate_template(
             classification="unsubscribe",
             account=_to_account(contact),
-            business_context=client_config.business_context,
+            business_context=business_context,
             anthropic_api_key="",  # unsubscribe is static; key not used
         )
     if classification in ("interested", "not_now", "wrong_person"):
         return generate_template(
             classification=classification,
             account=_to_account(contact),
-            business_context=client_config.business_context,
+            business_context=business_context,
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         )
     if classification in ("info_request", "objection"):
@@ -512,7 +534,7 @@ def _generate_response(
             classification=classification,
             reply_text=payload.reply_text,
             account=_to_account(contact),
-            business_context=client_config.business_context,
+            business_context=business_context,
             sender_persona_name=payload.sender_persona or "the team",
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         )

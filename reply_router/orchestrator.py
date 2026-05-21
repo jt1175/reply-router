@@ -498,7 +498,7 @@ def _render_booking_link(client_config, contact_id: str) -> str:
         return raw
     from reply_router.qualifier import url_token as _url_token
     secret = os.environ.get(client_config.auth.router_secret_env, "")
-    tok = _url_token(secret, contact_id, int(time.time()))
+    tok = _url_token(secret, contact_id, int(_time.time()))
     return raw.replace("{contact_id}", contact_id).replace("{token}", tok)
 
 

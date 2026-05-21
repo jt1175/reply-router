@@ -51,14 +51,19 @@ def _draft_to_html(text: str) -> str:
     `email_body` as HTML and strips whitespace formatting).
 
     Idempotent: if the input already contains HTML tags, returns it unchanged.
+    Otherwise paragraphs are html.escape()'d before wrapping — covers the case
+    where Claude writes a literal `<5,000 sqft` or `M&M Cleaning` in a reply.
     """
+    import html
     if not text or not text.strip():
         return text
     lo = text.lower()
     if "<p>" in lo or "<div>" in lo or "<br" in lo:
         return text
     paragraphs = [p for p in text.split("\n\n") if p.strip()]
-    return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs)
+    return "".join(
+        f"<p>{html.escape(p).replace(chr(10), '<br>')}</p>" for p in paragraphs
+    )
 
 
 def _clients_dir() -> Path:

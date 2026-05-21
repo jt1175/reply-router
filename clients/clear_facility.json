@@ -120,17 +120,25 @@
   ],
   "_pause_on_stage_ids_doc": "GHL stage IDs (Closed Won + Closed Lost). When an opportunity moves into these, the bidirectional sync pauses the contact's Smartlead lead so no more follow-ups go out.",
   "business_context": {
-    "_doc_status": "Shawn-supplied content. Many fields are TBD until JT confirms specific marketing copy with Shawn. Skeleton uses derivable values from CFS engagement memory + intent-signal-engine config. Booking link is intentionally a PLACEHOLDER sentinel; orchestrator detects 'PLACEHOLDER' substring (case-insensitive) and forces shadow_send for interested/info_request/objection until JT provisions the real GHL calendar URL.",
+    "_doc_status": "Most fields populated 2026-05-20 with JT_DRAFT_* values, awaiting Shawn confirmation per docs/client_communications/2026-05-20_shawn_business_context_request.md. Website + Shawn email are real values; phone + address still TBD. booking_link remains PLACEHOLDER until JT flips it post-launch readiness. credential_mentions all marked AWAITING_SHAWN_CONFIRM \u2014 responder should NOT surface any credential until the AWAITING_ prefix is removed for that specific item.",
     "company_name": "Clear Facility Services",
     "company_full_name": "Clear Facility Services LLC",
-    "tagline": "TBD_CFS_TAGLINE_confirm_with_Shawn",
-    "phone": "TBD_CFS_PHONE_confirm_with_Shawn",
-    "email": "TBD_CFS_INBOUND_EMAIL_confirm_with_Shawn",
-    "address": "TBD_CFS_BUSINESS_ADDRESS_confirm_with_Shawn",
-    "website": "TBD_CFS_WEBSITE_confirm_with_Shawn",
+    "tagline": "JT_DRAFT_2026-05-20 \u2014 Twin Cities owner-operated commercial cleaning \u2014 built for facility managers who care about consistency.",
+    "phone": "JT_DRAFT_2026-05-20_PHONE_TBD_FROM_SHAWN",
+    "email": "shawn@clearfacilityservices.com",
+    "address": "JT_DRAFT_2026-05-20_ADDRESS_TBD_FROM_SHAWN",
+    "website": "https://www.clearfacilityservices.com/",
     "service_area": "Minneapolis-St. Paul metro, 45-minute radius from downtown Minneapolis or downtown St. Paul",
     "services_offered": [
-      "TBD_confirm_with_Shawn \u2014 likely includes: commercial office cleaning (nightly/weekly), warehouse + logistics facility cleaning, day porter service, post-construction cleanup, floor care (strip/wax/burnish), carpet extraction, window cleaning (interior), restroom sanitation programs, medical office cleaning"
+      "Commercial office cleaning (nightly/weekly)",
+      "Warehouse + logistics facility cleaning",
+      "Day porter service",
+      "Post-construction cleanup",
+      "Floor care (strip/wax/burnish)",
+      "Carpet extraction",
+      "Interior window cleaning",
+      "Restroom sanitation programs",
+      "Medical office cleaning (medical practitioner offices only \u2014 not hospitals, not dentist offices)"
     ],
     "services_not_offered": [
       "restaurant cleaning",
@@ -148,26 +156,31 @@
       "landscaping or grounds maintenance"
     ],
     "value_props": [
-      "TBD_confirm_with_Shawn \u2014 common framings: specialized equipment (auto-scrubbers for hard-floor properties), local Twin Cities owner-operator (not a national chain), 50%+ margin discipline keeps quality high (won't race to the bottom on price), responsiveness within the 45-min metro radius, route-density pricing for clusters of properties"
+      "Specialized auto-scrubber equipment for hard-floor properties",
+      "Twin Cities owner-operated \u2014 not a national chain",
+      "W-2 employees, not subcontractors",
+      "50%+ margin discipline keeps quality high (won't race to the bottom on price)",
+      "Responsive within the 45-min Minneapolis\u2013St. Paul metro radius",
+      "Route-density pricing for clusters of nearby properties"
     ],
-    "pricing_response": "TBD_confirm_with_Shawn_EXACT_WORDING \u2014 must NEVER quote $ amounts. Suggested baseline: 'Pricing depends on square footage, frequency, and what kind of facility you're running \u2014 happy to put a number together after a quick 10-minute walkthrough so I can see the space.'",
-    "scheduling_info": "TBD_confirm_with_Shawn \u2014 typical answer: 'We schedule walkthroughs within the week, usually mornings or after-hours so we don't disrupt your team.'",
-    "sales_process": "TBD_confirm_with_Shawn \u2014 typical answer: '10-min discovery call \u2192 30-min on-site walkthrough \u2192 written proposal within 48 hours \u2192 start date typically within 2 weeks of signing.'",
+    "pricing_response": "Pricing depends on square footage, frequency, and what kind of facility you're running \u2014 happy to put a number together after a quick 10-minute walkthrough so I can see the space.",
+    "scheduling_info": "We schedule walkthroughs within the week, usually mornings or after-hours so we don't disrupt your team.",
+    "sales_process": "10-min discovery call \u2192 30-min on-site walkthrough \u2192 written proposal within 48 hours \u2192 start date typically within 2 weeks of signing.",
     "common_objections": {
-      "_doc": "Pre-written response templates the contextual responder may use as-is or adapt. Add one key per objection theme Shawn hears in the wild during the shadow-mode review window.",
-      "already_have_vendor": "TBD_confirm_with_Shawn \u2014 typical: 'Totally understood \u2014 most folks we walk through with already have someone. Worth a 10-minute call just so we're on your bench if anything changes? Plenty of property managers we work with had a long-term vendor before they switched.'",
-      "send_pricing_first": "TBD_confirm_with_Shawn \u2014 typical: 'Happy to put something together, but pricing for facility cleaning really hinges on a quick walkthrough \u2014 square footage and what's actually in the space drive everything. 10 minutes on-site lets me put a real number in front of you rather than a guess.'",
-      "not_in_budget": "TBD_confirm_with_Shawn \u2014 typical: 'No problem. If anything shifts in the next quarter, would it be useful if I sent a quick check-in note in 60 days? Won't pester.'",
-      "too_busy_now": "TBD_confirm_with_Shawn \u2014 typical: 'Hear you. When does the dust settle \u2014 end of Q3 or sooner? I'll put a note on my side to circle back then.'",
-      "contract_locked_in": "TBD_confirm_with_Shawn \u2014 typical: 'When does that contract come up for renewal? Worth a walkthrough 60-90 days ahead so you have a real alternative on the table.'"
+      "_doc": "Pre-written response templates the contextual responder uses verbatim or paraphrases. JT_DRAFT values approved 2026-05-20; pending Shawn confirmation.",
+      "already_have_vendor": "Totally understood \u2014 most folks we walk through with already have someone. Worth a 10-minute call just so we're on your bench if anything changes? Plenty of property managers we work with had a long-term vendor before they switched.",
+      "send_pricing_first": "Happy to put something together, but pricing for facility cleaning really hinges on a quick walkthrough \u2014 square footage and what's actually in the space drive everything. 10 minutes on-site lets me put a real number in front of you rather than a guess.",
+      "not_in_budget": "No problem. If anything shifts in the next quarter, would it be useful if I sent a quick check-in note in 60 days? Won't pester.",
+      "too_busy_now": "Hear you. When does the dust settle \u2014 end of Q3 or sooner? I'll put a note on my side to circle back then.",
+      "contract_locked_in": "When does that contract come up for renewal? Worth a walkthrough 60-90 days ahead so you have a real alternative on the table."
     },
     "booking_link": "https://calendar.app.google/PLACEHOLDER_REPLACE_AFTER_GHL_CALENDAR_SETUP",
     "credential_mentions": {
-      "_doc": "Credential blurbs the responder may include for trust-building. Confirm with Shawn which ones are accurate + which he wants surfaced in cold-reply context.",
-      "issa": "TBD_confirm_with_Shawn \u2014 if applicable: 'ISSA-certified team' (International Sanitary Supply Association).",
-      "insurance": "TBD_confirm_with_Shawn \u2014 typical: 'Fully insured and bonded; happy to share a COI.'",
-      "background_checks": "TBD_confirm_with_Shawn \u2014 typical: 'All on-site staff background-checked and W-2 employees (not subcontracted).'",
-      "local_owner_operator": "TBD_confirm_with_Shawn \u2014 typical: 'Twin Cities owner-operator since [year]; not a franchise.'"
+      "_doc": "JT_DRAFT 2026-05-20 \u2014 Shawn must opt-in per credential before each is surfaced. Until Shawn confirms specific items, treat all as 'do not surface' in responder output.",
+      "issa": "JT_DRAFT_AWAITING_SHAWN_CONFIRM \u2014 ISSA-certified team (International Sanitary Supply Association).",
+      "insurance": "JT_DRAFT_AWAITING_SHAWN_CONFIRM \u2014 Fully insured and bonded; happy to share a COI.",
+      "background_checks": "JT_DRAFT_AWAITING_SHAWN_CONFIRM \u2014 All on-site staff background-checked and W-2 employees (not subcontracted).",
+      "local_owner_operator": "JT_DRAFT_AWAITING_SHAWN_CONFIRM \u2014 Twin Cities owner-operator; not a franchise. (Year-founded TBD from Shawn.)"
     }
   }
 }

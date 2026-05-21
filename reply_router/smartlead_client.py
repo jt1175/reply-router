@@ -163,6 +163,39 @@ class SmartleadClient:
                 f"campaign={campaign_id} lead={lead_id} body={resp.text[:200]}"
             )
 
+    def get_campaign_statistics(
+        self,
+        campaign_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        event_time_gt: str | None = None,
+    ) -> dict:
+        """Fetch per-lead engagement stats for a campaign.
+
+        Endpoint: GET /campaigns/{cid}/lead-statistics?api_key=
+        Returns dict with `data` list of leads, each with fields:
+          lead_email, sequence_number, sent_time, open_time, click_time,
+          reply_time, open_count, click_count, is_unsubscribed, is_bounced.
+
+        Paginated — caller iterates `offset` up to `total_stats` (in response).
+        Filter `event_time_gt` (YYYY-MM-DD) to skip leads with no events since
+        the last reconcile tick.
+        """
+        url = f"{SMARTLEAD_BASE}/campaigns/{campaign_id}/lead-statistics"
+        params = self._params(limit=limit, offset=offset)
+        if event_time_gt:
+            params["event_time_gt"] = event_time_gt
+        try:
+            resp = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT_SEC)
+        except requests.RequestException as exc:
+            raise SmartleadError(f"get_campaign_statistics network error: {exc}") from exc
+        if resp.status_code != 200:
+            raise SmartleadError(
+                f"get_campaign_statistics failed: status={resp.status_code} "
+                f"campaign={campaign_id} body={resp.text[:200]}"
+            )
+        return resp.json()
+
     def mark_unsubscribe(self, campaign_id: str, lead_id: str) -> None:
         """Mark a Smartlead lead as unsubscribed in the campaign.
 

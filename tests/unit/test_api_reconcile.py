@@ -186,3 +186,163 @@ def test_reconcile_client_integration(monkeypatch):
     p1.assert_called_once()
     p2.assert_called_once()
     p3.assert_called_once()
+
+
+# ─── Phase 4 (Smartlead → GHL metrics sync) ───
+
+from reply_router.reconciler import phase4_metrics_sync
+
+
+def _phase4_config(**overrides):
+    """Minimal client_config-shaped stub for Phase 4 tests."""
+    cfg = MagicMock()
+    cfg.client_id = "test_client"
+    cfg.smartlead.campaign_ids = ["camp_1"]
+    cfg.ghl.custom_field_ids = {
+        "reply_classification": "cf_class", "reply_received_at": "cf_at",
+        "contract_end_date": "cf_end", "nurture_bucket": "cf_nb",
+        "last_processed_smartlead_message_ids": "cf_roll",
+        "currently_processing_smartlead_message_id": "cf_lock",
+        "pending_draft_token": "cf_tok", "pending_draft_text": "cf_dtext",
+        "pending_draft_created_at": "cf_dat",
+        "pending_reply_message_id": "cf_rmid",
+        "pending_reply_email_stats_id": "cf_resid",
+        "email_open_count": "cf_open_n",
+        "email_click_count": "cf_click_n",
+        "email_bounce_count": "cf_bounce_n",
+        "last_open_at": "cf_last_open",
+        "last_click_at": "cf_last_click",
+        "unsubscribed_at": "cf_unsub_at",
+    }
+    for k, v in overrides.items():
+        if k == "campaign_ids":
+            cfg.smartlead.campaign_ids = v
+        elif k == "custom_field_ids":
+            cfg.ghl.custom_field_ids = v
+    return cfg
+
+
+def test_phase4_skipped_when_metric_fields_missing():
+    """Phase 4 requires the 6 metric fields; without them it's a no-op."""
+    cfg = _phase4_config(custom_field_ids={"reply_classification": "x"})  # incomplete
+    summary = phase4_metrics_sync(MagicMock(), MagicMock(), cfg)
+    assert summary["status"] == "skipped"
+    assert "missing custom_field_ids" in summary["reason"]
+
+
+def test_phase4_skips_tbd_campaigns():
+    """Campaigns whose IDs are still TBD_ placeholders are skipped."""
+    cfg = _phase4_config(campaign_ids=["TBD_SMARTLEAD_CAMPAIGN_ID"])
+    summary = phase4_metrics_sync(MagicMock(), MagicMock(), cfg)
+    assert summary["campaigns_processed"] == 0
+
+
+def test_phase4_skips_zero_stat_leads():
+    """Leads with no opens/clicks/bounces/unsubs get skipped (no GHL work)."""
+    sl = MagicMock()
+    sl.get_campaign_statistics.return_value = {
+        "data": [{"lead_email": "z@x.com", "open_count": 0, "click_count": 0,
+                  "is_unsubscribed": False, "is_bounced": False}],
+        "total_stats": 1,
+    }
+    ghl = MagicMock()
+    cfg = _phase4_config()
+    summary = phase4_metrics_sync(sl, ghl, cfg)
+    assert summary["leads_skipped_zero_stats"] == 1
+    ghl.get_contacts_by_email.assert_not_called()
+
+
+def test_phase4_pushes_open_delta_to_ghl():
+    """Smartlead shows 5 opens, GHL shows 2 → update GHL to 5 + last_open_at."""
+    sl = MagicMock()
+    sl.get_campaign_statistics.return_value = {
+        "data": [{"lead_email": "pat@acme.com", "open_count": 5, "click_count": 0,
+                  "open_time": "2026-05-21T10:00:00Z", "is_unsubscribed": False, "is_bounced": False}],
+        "total_stats": 1,
+    }
+    ghl = MagicMock()
+    ghl.get_contacts_by_email.return_value = [{
+        "id": "ct_1", "customFields": [
+            {"id": "cf_open_n", "value": "2"},
+            {"id": "cf_click_n", "value": "0"},
+        ],
+    }]
+    cfg = _phase4_config()
+    summary = phase4_metrics_sync(sl, ghl, cfg)
+    assert summary["opens_synced"] == 1
+    write = ghl.update_contact.call_args.kwargs["custom_fields"]
+    assert write["cf_open_n"] == "5"
+    assert write["cf_last_open"] == "2026-05-21T10:00:00Z"
+
+
+def test_phase4_idempotent_when_ghl_already_caught_up():
+    """If GHL count >= Smartlead count, no update — phase 4 must be idempotent."""
+    sl = MagicMock()
+    sl.get_campaign_statistics.return_value = {
+        "data": [{"lead_email": "pat@acme.com", "open_count": 3, "click_count": 0,
+                  "is_unsubscribed": False, "is_bounced": False}],
+        "total_stats": 1,
+    }
+    ghl = MagicMock()
+    ghl.get_contacts_by_email.return_value = [{
+        "id": "ct_1", "customFields": [{"id": "cf_open_n", "value": "5"}],  # GHL ahead
+    }]
+    cfg = _phase4_config()
+    summary = phase4_metrics_sync(sl, ghl, cfg)
+    assert summary["opens_synced"] == 0
+    ghl.update_contact.assert_not_called()
+
+
+def test_phase4_handles_unsubscribed_flag():
+    """is_unsubscribed=True + no unsubscribed_at in GHL → DNC + set timestamp."""
+    sl = MagicMock()
+    sl.get_campaign_statistics.return_value = {
+        "data": [{"lead_email": "p@x.com", "open_count": 1, "click_count": 0,
+                  "is_unsubscribed": True, "is_bounced": False}],
+        "total_stats": 1,
+    }
+    ghl = MagicMock()
+    ghl.get_contacts_by_email.return_value = [{
+        "id": "ct_1", "customFields": [{"id": "cf_open_n", "value": "0"}],
+    }]
+    cfg = _phase4_config()
+    summary = phase4_metrics_sync(sl, ghl, cfg)
+    assert summary["unsubscribes_synced"] == 1
+    ghl.add_to_dnc.assert_called_with("ct_1")
+
+
+def test_phase4_handles_contact_not_found_in_ghl():
+    """Lead with stats but no GHL contact → counted, no crash."""
+    sl = MagicMock()
+    sl.get_campaign_statistics.return_value = {
+        "data": [{"lead_email": "ghost@nowhere.com", "open_count": 1, "click_count": 0,
+                  "is_unsubscribed": False, "is_bounced": False}],
+        "total_stats": 1,
+    }
+    ghl = MagicMock()
+    ghl.get_contacts_by_email.return_value = []
+    cfg = _phase4_config()
+    summary = phase4_metrics_sync(sl, ghl, cfg)
+    assert summary["contacts_not_found_in_ghl"] == 1
+    ghl.update_contact.assert_not_called()
+
+
+def test_phase4_paginates_when_total_exceeds_limit():
+    """Stats endpoint returns up to 100 per page; phase 4 keeps fetching until exhausted."""
+    sl = MagicMock()
+    sl.get_campaign_statistics.side_effect = [
+        # Page 1
+        {"data": [{"lead_email": f"p{i}@x.com", "open_count": 1, "click_count": 0,
+                   "is_unsubscribed": False, "is_bounced": False}
+                  for i in range(100)], "total_stats": 150},
+        # Page 2
+        {"data": [{"lead_email": f"p{i}@x.com", "open_count": 1, "click_count": 0,
+                   "is_unsubscribed": False, "is_bounced": False}
+                  for i in range(100, 150)], "total_stats": 150},
+    ]
+    ghl = MagicMock()
+    ghl.get_contacts_by_email.return_value = []  # all not-found, simplifies test
+    cfg = _phase4_config()
+    summary = phase4_metrics_sync(sl, ghl, cfg)
+    assert summary["leads_seen"] == 150
+    assert sl.get_campaign_statistics.call_count == 2

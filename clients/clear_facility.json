@@ -166,7 +166,7 @@
     ],
     "pricing_response": "Pricing depends on square footage, frequency, and what kind of facility you're running \u2014 happy to put a number together after a quick 10-minute walkthrough so I can see the space.",
     "scheduling_info": "We schedule walkthroughs within the week, usually mornings or after-hours so we don't disrupt your team.",
-    "sales_process": "10-min discovery call \u2192 30-min on-site walkthrough \u2192 written proposal within 48 hours \u2192 start date typically within 2 weeks of signing.",
+    "sales_process": "30-min on-site walkthrough \u2192 written proposal within 48 hours \u2192 start date typically within 2 weeks of signing.",
     "common_objections": {
       "_doc": "Pre-written response templates the contextual responder uses verbatim or paraphrases. JT_DRAFT values approved 2026-05-20; pending Shawn confirmation.",
       "already_have_vendor": "Totally understood \u2014 most folks we walk through with already have someone. Worth a 10-minute call just so we're on your bench if anything changes? Plenty of property managers we work with had a long-term vendor before they switched.",

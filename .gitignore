@@ -33,3 +33,6 @@ logs/
 
 # Test artifacts
 tests/fixtures/webhooks/*-real-*.json
+
+# Client comms — kept in private location outside dev repos
+docs/client_communications/

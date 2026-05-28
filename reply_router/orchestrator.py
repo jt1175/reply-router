@@ -220,9 +220,18 @@ def process_reply(
     source: Literal["webhook", "reconciler"] = "webhook",
 ) -> ProcessResult:
     """Full §4.1 pipeline. Filled in across Tasks 4.1b–4.1g."""
+    # Top-of-pipeline visibility: Vercel's Python runtime suppresses .info-level
+    # records, so silent early-returns were invisible in production. Logging the
+    # entry point at .warning means every webhook execution leaves a breadcrumb.
+    logger.warning(
+        "process_reply ENTER client=%s source=%s message_id=%s from=%s lead=%s campaign=%s",
+        client_config.client_id, source, payload.message_id,
+        payload.from_email, payload.lead_email, payload.campaign_id,
+    )
+
     # §4.1 step 4 — loop check
     if _loop_check(payload.from_email, client_config.sending_inboxes):
-        logger.info(
+        logger.warning(
             "loop ignored: from=%s matches sending_inboxes (client=%s, source=%s)",
             payload.from_email, client_config.client_id, source,
         )
@@ -233,11 +242,15 @@ def process_reply(
 
     # §4.1 step 5a/5b — resolve contact (creates skeleton if 0 matches)
     contact, resolution = ghl.resolve_contact_by_email(payload.lead_email)
+    logger.warning(
+        "resolved contact=%s resolution=%s for lead=%s",
+        contact.get("id"), resolution, payload.lead_email,
+    )
 
     # §4.1 step 5c — dedupe rolling list
     if check_rolling(contact, fids["last_processed_smartlead_message_ids"], payload.message_id):
-        logger.info("dedupe: rolling list hit for message_id=%s contact=%s",
-                    payload.message_id, contact["id"])
+        logger.warning("dedupe: rolling list hit for message_id=%s contact=%s",
+                       payload.message_id, contact["id"])
         return ProcessResult(status="duplicate", http_status=200)
 
     # §4.1 step 5d — soft lock
@@ -245,8 +258,8 @@ def process_reply(
         contact, fids["currently_processing_smartlead_message_id"], payload.message_id
     )
     if lock_state == SoftLockState.IN_FLIGHT:
-        logger.info("dedupe: soft lock IN_FLIGHT for message_id=%s contact=%s",
-                    payload.message_id, contact["id"])
+        logger.warning("dedupe: soft lock IN_FLIGHT for message_id=%s contact=%s",
+                       payload.message_id, contact["id"])
         return ProcessResult(status="in_flight_elsewhere", http_status=200)
     # STALE or ABSENT → proceed (and overwrite if STALE)
 
@@ -268,6 +281,10 @@ def process_reply(
     )
     classification = cls_result["classification"]
     confidence = cls_result["confidence"]
+    logger.warning(
+        "classified message_id=%s contact=%s classification=%s confidence=%s",
+        payload.message_id, contact["id"], classification, confidence,
+    )
 
     # §4.1 step 13a pre-check — booking link sentinel forces shadow
     booking_link_placeholder = requires_shadow(classification, client_config.business_context)
@@ -451,6 +468,34 @@ def process_reply(
         soft_lock_field_id=fids["currently_processing_smartlead_message_id"],
         message_id=payload.message_id,
     )
+
+    # Defensive pause-on-reply: belt-and-suspenders over Smartlead's
+    # stop_lead_settings=REPLY_TO_AN_EMAIL. Observed 2026-05-28: a paused-then-
+    # resumed campaign can re-fire a queued follow-up touch to a lead that
+    # already replied, because the resume re-arms without re-checking reply
+    # state. By explicitly pausing the lead here, we guarantee no further
+    # touches even if the campaign is paused/resumed later. Skip on unsubscribe
+    # — mark_unsubscribe already handles that path with stronger semantics.
+    if (
+        smartlead is not None
+        and classification != "unsubscribe"
+        and payload.campaign_id
+    ):
+        try:
+            sl_lead = smartlead.find_lead_by_email(payload.lead_email)
+            if sl_lead and sl_lead.get("id"):
+                smartlead.pause_lead(payload.campaign_id, str(sl_lead["id"]))
+                logger.warning(
+                    "defensive pause_lead OK campaign=%s smartlead_lead=%s contact=%s",
+                    payload.campaign_id, sl_lead["id"], contact["id"],
+                )
+        except SmartleadError as exc:
+            # Non-fatal: Smartlead's own stop-on-reply remains the primary
+            # mechanism. Log loudly so we notice if this fails consistently.
+            logger.error(
+                "defensive pause_lead failed (continuing): %s campaign=%s lead=%s",
+                exc, payload.campaign_id, payload.lead_email,
+            )
 
     # §4.1 step 15 — Slack notify (best-effort).
     # Routing already encoded the spec's behavior into action_bundle.slack_notify:

@@ -151,6 +151,18 @@ async def handle_reply(
     _check_router_secret(client_config, x_router_secret or secret)
     payload = await request.json()
 
+    # Vercel's Python runtime suppresses .info logs, so we use .warning at the
+    # entry point to guarantee a breadcrumb for every webhook execution. Keys
+    # only (not values) so secrets/PII don't leak into logs unnecessarily.
+    logger.warning(
+        "webhook recv client=%s top_keys=%s event_type_field=%r to_email=%s campaign=%s",
+        client_id,
+        list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+        (payload.get("event_type") if isinstance(payload, dict) else None),
+        (payload.get("to_email") if isinstance(payload, dict) else ""),
+        (payload.get("campaign_id") if isinstance(payload, dict) else ""),
+    )
+
     event_type = detect_event_type(payload)
     # Three branches:
     #   1. Recognized non-reply event → dedicated handler
@@ -174,7 +186,7 @@ async def handle_reply(
     if event_type not in (EVENT_REPLY, "UNKNOWN"):
         # Explicit event_type we don't handle (e.g. future Smartlead categories).
         # Ignore but log so we can build a handler later if it shows up in prod.
-        logger.info("ignoring unhandled event_type=%r", event_type)
+        logger.warning("ignoring unhandled event_type=%r", event_type)
         return JSONResponse(
             {"status": "ignored", "reason": f"unhandled event_type={event_type}"},
             status_code=200,

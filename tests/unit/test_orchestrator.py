@@ -1436,11 +1436,14 @@ def test_from_smartlead_webhook_falls_through_none_values():
         "email_stats_id": "stats_legacy",
     }
     rp = ReplyPayload.from_smartlead_webhook(payload)
-    # lead_email picks up the truthy fallback (precedence: lead_email → to_email → to)
+    # lead_email picks up the truthy fallback (precedence: sl_lead_email → to_email → lead_email → to)
     assert rp.lead_email == "fallback@example.com"
-    # from_email has no `lead_email` fallback by design — these are semantically
-    # distinct concepts (sender vs lead-record), even if usually equal in practice
-    assert rp.from_email == ""
+    # from_email derives from the same lead identity as lead_email (2026-05-28
+    # fix): for Smartlead inbound-reply webhooks the sender IS the lead. The
+    # earlier design treated them as separate fields, but Smartlead's
+    # payload.from_email is the OUTBOUND sending mailbox — using it for loop
+    # detection caused every real reply to false-positive as a self-loop.
+    assert rp.from_email == "fallback@example.com"
     assert rp.sender_persona == "Persona Fallback"
     assert rp.email_stats_id == "stats_legacy"
     assert rp.reply_text == "hi there"

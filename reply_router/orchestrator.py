@@ -91,6 +91,26 @@ class ReplyPayload:
         if not isinstance(reply, dict):
             reply = {}
         sent_msg = payload.get("sent_message") if isinstance(payload.get("sent_message"), dict) else {}
+
+        # CRITICAL: For real Smartlead reply webhooks, `payload.from_email` is
+        # the SENDING MAILBOX (e.g. sarah.jones@clearfacilitymn.com — whoever
+        # sent the original outbound), NOT the sender of the reply. Using it
+        # for loop_check caused every real reply to false-positive as a self-
+        # loop and get silently ignored at .info level. Empirically diagnosed
+        # 2026-05-28 after JT's E2E test: webhook returned 200 with no GHL
+        # writes; breadcrumb logging caught `from=mike.brooks@... matches
+        # sending_inboxes`. The actual sender of an inbound reply is, by the
+        # definition of "inbound reply", the lead. So derive both from_email
+        # and lead_email from the lead identity (sl_lead_email > to_email >
+        # lead_email > to). This means loop_check still catches the real
+        # loop case (lead address accidentally equal to a sending mailbox).
+        lead_identity = str(
+            payload.get("sl_lead_email")
+            or payload.get("to_email")
+            or payload.get("lead_email")
+            or payload.get("to")
+            or ""
+        )
         return cls(
             # REPLY's own message_id — used for dedupe rolling list. Must NOT
             # collide with sent_message.message_id, which is the outbound's id.
@@ -101,26 +121,8 @@ class ReplyPayload:
                 or payload.get("message_id")
                 or ""
             ),
-            # `from_email` is used by the loop check (`is this from one of our
-            # sending mailboxes?`). For inbound-reply webhooks the lead is the
-            # sender, and Smartlead exposes the lead via `to_email` (= who the
-            # outbound was sent to). Explicit `from_email` wins if a sender
-            # specifies one — useful for synthesized test payloads.
-            from_email=str(
-                payload.get("from_email")
-                or payload.get("to_email")
-                or payload.get("from")
-                or ""
-            ),
-            # `lead_email` is used to look up the lead in GHL. For real Smartlead
-            # webhooks of inbound replies, same value as from_email — but they're
-            # semantically distinct, so keep parallel fallback chains.
-            lead_email=str(
-                payload.get("lead_email")
-                or payload.get("to_email")
-                or payload.get("to")
-                or ""
-            ),
+            from_email=lead_identity,
+            lead_email=lead_identity,
             campaign_id=str(payload.get("campaign_id") or ""),
             reply_text=_html_to_text(
                 reply.get("text")

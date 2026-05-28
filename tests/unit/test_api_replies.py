@@ -76,12 +76,16 @@ def test_500_on_unknown_client(app_client):
 
 
 def test_200_on_valid_secret_with_minimal_payload(app_client):
-    """With the correct secret, the handler proceeds past auth. The from_email IS in
-    sending_inboxes so the loop check short-circuits at the first step and returns 200."""
+    """With the correct secret, the handler proceeds past auth. The lead identity
+    (to_email) IS in sending_inboxes so the loop check short-circuits and returns
+    ignored_self. This tests the real loop case: a sending mailbox accidentally
+    added as a lead in Smartlead. Note: payload.from_email is NOT consulted for
+    loop detection — Smartlead sets it to the outbound sending mailbox by default,
+    which would false-positive on every legitimate reply."""
     resp = app_client.post(
         "/v1/clients/test_client/replies",
-        json={"message_id": "m1", "from_email": "sender@test.invalid",
-              "lead_email": "p@example.com", "campaign_id": "c1", "reply_text": "hi"},
+        json={"message_id": "m1", "to_email": "sender@test.invalid",
+              "campaign_id": "c1", "reply_text": "hi"},
         headers={"X-Router-Secret": "supersecret"},
     )
     assert resp.status_code == 200
@@ -92,8 +96,8 @@ def test_200_on_valid_secret_via_query_param(app_client):
     """Smartlead webhooks can't set custom headers — accept the secret via ?secret= too."""
     resp = app_client.post(
         "/v1/clients/test_client/replies?secret=supersecret",
-        json={"message_id": "m2", "from_email": "sender@test.invalid",
-              "lead_email": "p@example.com", "campaign_id": "c1", "reply_text": "hi"},
+        json={"message_id": "m2", "to_email": "sender@test.invalid",
+              "campaign_id": "c1", "reply_text": "hi"},
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ignored_self"
@@ -183,8 +187,8 @@ def test_full_webhook_flow_happy_path(mock_build, mock_classify, mock_sl_cls, mo
     resp = app_client_full.post(
         "/v1/clients/test_client/replies",
         json={
-            "message_id": "m_e2e", "from_email": "pat@acme.com",
-            "lead_email": "pat@acme.com", "campaign_id": "c1",
+            "message_id": "m_e2e", "to_email": "pat@acme.com",
+            "campaign_id": "c1",
             "reply_text": "yes, please send more info",
             "email_stats_id": "stats_e2e",
         },

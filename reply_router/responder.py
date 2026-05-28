@@ -107,7 +107,7 @@ def generate_template(
     )
 
 
-CONTEXTUAL_CLASSIFICATIONS = frozenset({"info_request", "objection"})
+CONTEXTUAL_CLASSIFICATIONS = frozenset({"info_request", "objection", "interested"})
 
 # Sentinels that mark fields as "not yet Shawn-confirmed." Values containing any of
 # these must NEVER be surfaced to Claude — they're either placeholders or unverified

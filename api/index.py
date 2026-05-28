@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from html import escape
@@ -42,6 +43,35 @@ from reply_router.smartlead_client import SmartleadClient, SmartleadError
 
 app = FastAPI(title="reply-router", version="0.1.0")
 logger = logging.getLogger("api.index")
+
+
+_BOOKING_URL_RE = re.compile(
+    r"https://reply-router\.vercel\.app/v1/clients/[a-z_]+/qualify/[A-Za-z0-9_-]+\?token=[\d.a-f]+"
+)
+
+
+def _linkify_booking_url(html_body: str, anchor_text: str = "book a walkthrough call") -> str:
+    """Replace bare booking-link URLs with HTML anchors so recipients see clickable
+    text instead of a wall of token-laden URL.
+
+    Bare URL example:
+        https://reply-router.vercel.app/v1/clients/clear_facility/qualify/<id>?token=<ts>.<hex>
+    After:
+        <a href="…">book a walkthrough call</a>
+
+    Runs AFTER _draft_to_html so the HTML wrapping is preserved. Idempotent —
+    if the URL is already wrapped in an anchor, the regex won't double-match
+    because anchor URLs are inside attribute values.
+    """
+    def _replace(match: re.Match) -> str:
+        url = match.group(0)
+        # Don't double-wrap if URL is already inside an <a href=...> attribute
+        start = match.start()
+        before = html_body[max(0, start - 12):start]
+        if 'href="' in before or "href='" in before:
+            return url
+        return f'<a href="{url}">{anchor_text}</a>'
+    return _BOOKING_URL_RE.sub(_replace, html_body)
 
 
 def _draft_to_html(text: str) -> str:
@@ -299,7 +329,7 @@ async def post_approval_send(
         smartlead.send_reply_in_thread(
             campaign_id=reply_campaign_id,
             email_stats_id=email_stats_id,
-            body=_draft_to_html(draft_text),
+            body=_linkify_booking_url(_draft_to_html(draft_text)),
             reply_message_id=reply_message_id,
         )
     except SmartleadError as exc:

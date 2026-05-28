@@ -565,14 +565,19 @@ def _generate_response(
             business_context=business_context,
             anthropic_api_key="",  # unsubscribe is static; key not used
         )
-    if classification in ("interested", "not_now", "wrong_person"):
+    if classification in ("not_now", "wrong_person"):
         return generate_template(
             classification=classification,
             account=_to_account(contact),
             business_context=business_context,
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
         )
-    if classification in ("info_request", "objection"):
+    if classification in ("interested", "info_request", "objection"):
+        # 'interested' was previously routed through the template path (200 max-tokens,
+        # 1-2 sentence ack + link). That produced terse replies that ignored the
+        # specifics prospects mentioned in their reply. Routing through contextual
+        # now ensures we engage with substance (sqft, vendor situation, etc.) while
+        # still ending with the booking-link CTA.
         return generate_contextual(
             classification=classification,
             reply_text=payload.reply_text,

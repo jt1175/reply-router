@@ -209,10 +209,13 @@ def test_contextual_short_response_marked_failed(mock_anthropic_cls):
 
 
 def test_contextual_rejects_non_contextual_classification():
+    """'interested' is now contextual (2026-05-27 — was previously template-only;
+    swap was to let the AI actually engage with substantive interested replies
+    rather than punt to the booking link). 'not_now' / 'wrong_person' stay template-only."""
     from reply_router.responder import generate_contextual
     with pytest.raises(ValueError, match="non-contextual"):
         generate_contextual(
-            classification="interested", reply_text="x",
+            classification="not_now", reply_text="x",
             account={}, business_context=_bc(),
             sender_persona_name="S", anthropic_api_key="k",
         )

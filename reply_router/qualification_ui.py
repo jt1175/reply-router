@@ -53,18 +53,26 @@ def render_form(
     action_path: str,
 ) -> str:
     """Render the qualification form. POSTs to action_path with all fields + CSRF."""
-    fn = _e(contact.get("firstName") or "there")
-    co = _e(contact.get("companyName") or "your company")
+    # Use firstName only when it's a real name; never fall back to a literal
+    # like "there" or "friend" in a comma-prefix slot. Reads as a template bug
+    # otherwise ("Hi there," is fine; "Thanks, there" reads broken).
+    raw_fn = (contact.get("firstName") or "").strip()
+    has_name = bool(raw_fn) and raw_fn.lower() not in ("there", "friend", "unknown")
+    fn = _e(raw_fn) if has_name else ""
+    greeting = f"Hi {fn}, " if has_name else "Hi — "
+    co_raw = (contact.get("companyName") or "").strip()
+    co = _e(co_raw or "your company")
     em = _e(contact.get("email") or "")
+    contact_line = (f"{fn} at {co}" if has_name else co) if co_raw else (fn if has_name else "—")
     return f"""<!doctype html>
 <html><head><title>{_e(company_display_name)} — Quick Qualification</title>
 {BASE_STYLES}
 </head><body>
 <h1>Quick qualification for {_e(company_display_name)}</h1>
-<p class="meta">Hi {fn}, takes about 60 seconds. We use this to make sure we're a fit before booking a walkthrough.</p>
+<p class="meta">{greeting}takes about 60 seconds. We use this to make sure we're a fit before booking a walkthrough.</p>
 
 <div class="context">
-  <strong>Contact:</strong> {fn} at {co}<br>
+  <strong>Contact:</strong> {contact_line}<br>
   <strong>Email:</strong> {em}
 </div>
 
@@ -153,8 +161,11 @@ def render_slot_picker(
 
     free_slots is a list of dicts: {"start_iso": "...", "label": "Mon May 26, 10:00 AM CT"}
     """
-    fn = _e(contact.get("firstName") or "there")
-    co = _e(contact.get("companyName") or "your company")
+    raw_fn = (contact.get("firstName") or "").strip()
+    has_name = bool(raw_fn) and raw_fn.lower() not in ("there", "friend", "unknown")
+    fn = _e(raw_fn) if has_name else ""
+    co_raw = (contact.get("companyName") or "").strip()
+    co = _e(co_raw or "your company")
 
     if not free_slots:
         slots_html = (
@@ -174,15 +185,32 @@ def render_slot_picker(
         )
         slots_html = slot_buttons
 
+    if has_name:
+        meta_line = f"{fn}, thanks for the context on {co}. Here are the next open 30-minute walkthrough slots."
+    elif co_raw:
+        meta_line = f"Thanks for the context on {co}. Here are the next open 30-minute walkthrough slots."
+    else:
+        meta_line = "Thanks for the context. Here are the next open 30-minute walkthrough slots."
+
     return f"""<!doctype html>
 <html><head><title>{_e(company_display_name)} — Pick a walkthrough time</title>
 {BASE_STYLES}
 </head><body>
 <h1>You're a fit — let's get on the calendar</h1>
-<p class="meta">{fn}, thanks for the context on {co}. Here are the next open 30-minute walkthrough slots.</p>
+<p class="meta">{meta_line}</p>
 <h2>Pick a time</h2>
 {slots_html}
 </body></html>"""
+
+
+def _name_or_empty(contact: dict) -> str:
+    """Return the firstName only if it's usable as a literal name (not a
+    placeholder like 'there'). Empty string otherwise — callers should drop the
+    comma-prefixed name slot entirely when this returns empty."""
+    raw = (contact.get("firstName") or "").strip()
+    if not raw or raw.lower() in ("there", "friend", "unknown"):
+        return ""
+    return _e(raw)
 
 
 def render_gray_zone(
@@ -190,7 +218,8 @@ def render_gray_zone(
     company_display_name: str,
     follow_up_blurb: str | None = None,
 ) -> str:
-    fn = _e(contact.get("firstName") or "there")
+    fn = _name_or_empty(contact)
+    heading = f"Thanks, {fn}" if fn else "Thanks for the info"
     blurb = _e(
         follow_up_blurb
         or "Thanks for the info — based on what you shared we want to take a closer look before booking time. Someone from the team will reach out within one business day."
@@ -199,7 +228,7 @@ def render_gray_zone(
 <html><head><title>{_e(company_display_name)} — Thanks</title>
 {BASE_STYLES}
 </head><body>
-<h1>Thanks, {fn}</h1>
+<h1>{heading}</h1>
 <div class="terminal neutral">
   <p>{blurb}</p>
 </div>
@@ -211,7 +240,8 @@ def render_reject(
     company_display_name: str,
     reject_blurb: str | None = None,
 ) -> str:
-    fn = _e(contact.get("firstName") or "there")
+    fn = _name_or_empty(contact)
+    heading = f"Thanks for reaching out, {fn}" if fn else "Thanks for reaching out"
     blurb = _e(
         reject_blurb
         or "Thanks for considering us. Based on what you shared, we're not the right fit right now — usually because the facility type or scope is outside what we currently serve. If anything shifts (different building, expanded scope, vendor change), feel free to reach back out."
@@ -220,7 +250,7 @@ def render_reject(
 <html><head><title>{_e(company_display_name)} — Thanks</title>
 {BASE_STYLES}
 </head><body>
-<h1>Thanks for reaching out, {fn}</h1>
+<h1>{heading}</h1>
 <div class="terminal neutral">
   <p>{blurb}</p>
 </div>
@@ -233,7 +263,8 @@ def render_confirmation(
     company_display_name: str,
     company_phone: str | None = None,
 ) -> str:
-    fn = _e(contact.get("firstName") or "there")
+    fn = _name_or_empty(contact)
+    booked_for = f"{fn}, you're booked for:" if fn else "You're booked for:"
     phone_html = (
         f'<p>Need to reschedule? Reply to the original email or call <strong>{_e(company_phone)}</strong>.</p>'
         if company_phone
@@ -245,7 +276,7 @@ def render_confirmation(
 </head><body>
 <h1>✓ Walkthrough confirmed</h1>
 <div class="terminal success">
-  <p><strong>{fn}, you're booked for:</strong></p>
+  <p><strong>{booked_for}</strong></p>
   <p style="font-size: 1.15em;">{_e(appointment_label)}</p>
   <p>You'll get a calendar invite by email shortly. Plan on ~30 minutes — we'll walk the space, ask a few questions, and put a written proposal together within 48 hours of the visit.</p>
 </div>

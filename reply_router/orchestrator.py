@@ -30,6 +30,120 @@ _HTML_BLOCK_END_RE = re.compile(r"</(p|div|h[1-6]|li|blockquote)>", re.IGNORECAS
 _HTML_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
+# Out-of-office detection — runs BEFORE the Claude classifier so we don't waste
+# tokens on autoresponders, and so we can carve OOO out of the standard
+# pause/move-stage/draft flow. An OOO reply means the prospect never read the
+# email; their autoresponder did. Treating it as 'not_now' (which the
+# classifier does by default) is wrong — we'd mistakenly nurture-bucket a
+# contact who's just on vacation. First confirmed in prod by Danielle Bader's
+# reply 2026-05-29 within minutes of cohort 1 launch.
+_OOO_SUBJECT_RE = re.compile(
+    r"^\s*(?:re:\s*)?"
+    r"(out of office|ooo|automatic reply|auto[- ]?reply|away from (?:the )?office|on vacation|"
+    r"out of the office|i'?m out|i am out|away message|vacation reply)",
+    re.IGNORECASE,
+)
+_OOO_BODY_PATTERNS = (
+    re.compile(r"\bout of (?:the )?office\b", re.IGNORECASE),
+    re.compile(r"\b(?:i'?m|i am) (?:currently |presently )?(?:out|away|on vacation|on leave|on holiday|on PTO)\b", re.IGNORECASE),
+    re.compile(r"\blimited access to (?:my )?(?:email|inbox)\b", re.IGNORECASE),
+    re.compile(r"\b(?:will (?:be )?return(?:ing)?|back in (?:the )?office|return to (?:the )?office)\b", re.IGNORECASE),
+    re.compile(r"\bauto(?:matic)?[- ]?(?:reply|responder|response)\b", re.IGNORECASE),
+    re.compile(r"\b(?:on|out for)\s+(?:vacation|maternity|paternity|sabbatical|parental)\s+leave\b", re.IGNORECASE),
+)
+
+
+def _is_out_of_office(subject: str, body: str) -> bool:
+    """Heuristic OOO detection. Subject alone or any body indicator is enough.
+
+    Subject signal is the strongest (most OOO autoresponders rewrite the
+    subject to start with 'Out of Office' or 'Automatic Reply'). Body signal
+    catches cases where the OOO doesn't touch the subject.
+
+    Calibrated against Danielle Bader's reply 2026-05-29 (subject "Out of
+    Office Re: ...", body "I am currently out of the office on an event
+    install"). Both signals fire as expected.
+    """
+    if subject and _OOO_SUBJECT_RE.search(subject):
+        return True
+    if body:
+        for pat in _OOO_BODY_PATTERNS:
+            if pat.search(body):
+                return True
+    return False
+
+
+def _handle_out_of_office(
+    ghl,
+    contact: dict,
+    payload: "ReplyPayload",
+    client_config,
+    fids: dict,
+) -> ProcessResult:
+    """OOO carve-out: tag the contact, leave them in Outreach, and ASK SMARTLEAD
+    TO RESUME the sequence (Smartlead's stop_lead_settings=REPLY_TO_AN_EMAIL
+    auto-stops on any reply including OOO).
+
+    No AI reply, no Slack notify, no pipeline stage move. The prospect is
+    just on vacation; we want touches 2-4 to keep firing on schedule.
+    """
+    logger.warning(
+        "OOO detected — applying carve-out (contact=%s campaign=%s)",
+        contact["id"], payload.campaign_id,
+    )
+    try:
+        ghl.add_tags(contact["id"], ["out_of_office", "auto_reply"])
+    except Exception as exc:
+        logger.error("OOO: add_tags failed (continuing): %s", exc)
+    try:
+        ghl.update_contact(contact["id"], custom_fields={
+            fids["reply_classification"]: "out_of_office",
+            fids["reply_received_at"]: datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.error("OOO: update_contact failed (continuing): %s", exc)
+    try:
+        ghl.add_note(
+            contact["id"],
+            f"Out-of-office auto-reply detected. Smartlead sequence will be "
+            f"resumed so touches 2-4 continue on schedule.\n\n"
+            f"Reply:\n{payload.reply_text}",
+        )
+    except Exception as exc:
+        logger.error("OOO: add_note failed (continuing): %s", exc)
+
+    # Reverse Smartlead's auto-stop so future touches keep firing. The
+    # defensive pause_lead at the end of the normal flow is also skipped
+    # for OOO (see classification carve-out below).
+    smartlead_api_key = os.environ.get(client_config.smartlead.api_key_env, "")
+    if smartlead_api_key and payload.campaign_id:
+        try:
+            sl = SmartleadClient(api_key=smartlead_api_key)
+            sl_lead = sl.find_lead_by_email(payload.lead_email)
+            if sl_lead and sl_lead.get("id"):
+                sl.resume_lead(payload.campaign_id, str(sl_lead["id"]))
+                logger.warning(
+                    "OOO: resumed Smartlead lead=%s campaign=%s",
+                    sl_lead["id"], payload.campaign_id,
+                )
+        except SmartleadError as exc:
+            logger.error(
+                "OOO: resume_lead failed (sequence may stay paused): %s "
+                "campaign=%s lead=%s",
+                exc, payload.campaign_id, payload.lead_email,
+            )
+
+    # Mark dedupe complete so a re-fired identical OOO doesn't re-process.
+    mark_complete(
+        ghl, contact,
+        rolling_field_id=fids["last_processed_smartlead_message_ids"],
+        soft_lock_field_id=fids["currently_processing_smartlead_message_id"],
+        message_id=payload.message_id,
+    )
+    return ProcessResult(
+        status="processed", http_status=200, classification="out_of_office",
+    )
+
 
 def _html_to_text(s: str) -> str:
     """Convert email HTML body to readable plain text, preserving paragraph breaks.
@@ -271,6 +385,14 @@ def process_reply(
         fids["currently_processing_smartlead_message_id"],
         payload.message_id,
     )
+
+    # Pre-classify carve-out: detect out-of-office autoresponders before
+    # spending a Claude call on them. OOO replies are NOT semantic engagement
+    # — the prospect's autoresponder fired, not the prospect. We tag, resume
+    # the Smartlead sequence (Smartlead auto-stops on any reply including
+    # OOO), and short-circuit. See _handle_out_of_office for full semantics.
+    if _is_out_of_office(payload.original_subject, payload.reply_text):
+        return _handle_out_of_office(ghl, contact, payload, client_config, fids)
 
     # §4.1 step 6 — classify
     cls_result = classify(

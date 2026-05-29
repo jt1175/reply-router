@@ -247,6 +247,32 @@ class SmartleadClient:
                 f"campaign={campaign_id} lead={lead_id} body={resp.text[:200]}"
             )
 
+    def resume_lead(self, campaign_id: str, lead_id: str) -> None:
+        """Resume a paused lead's sequence in a campaign.
+
+        Endpoint: POST /campaigns/{cid}/leads/{lid}/resume?api_key=...
+        Used by the out-of-office carve-out in orchestrator: Smartlead's
+        stop_lead_settings=REPLY_TO_AN_EMAIL auto-stops a lead on ANY reply
+        including OOO autoresponders. For OOO, we want touches 2-4 to keep
+        firing on schedule, so we explicitly resume after detection. Handles
+        404 quietly — lead may have already completed sequence or never been
+        paused.
+        """
+        url = f"{SMARTLEAD_BASE}/campaigns/{campaign_id}/leads/{lead_id}/resume"
+        try:
+            resp = requests.post(url, params=self._params(), timeout=DEFAULT_TIMEOUT_SEC)
+        except requests.RequestException as exc:
+            raise SmartleadError(f"resume_lead network error: {exc}") from exc
+        if resp.status_code == 404:
+            logger.info("resume_lead 404 (lead may not exist): campaign=%s lead=%s",
+                        campaign_id, lead_id)
+            return
+        if resp.status_code not in (200, 201, 204):
+            raise SmartleadError(
+                f"resume_lead failed: status={resp.status_code} "
+                f"campaign={campaign_id} lead={lead_id} body={resp.text[:200]}"
+            )
+
     def get_campaign_statistics(
         self,
         campaign_id: str,

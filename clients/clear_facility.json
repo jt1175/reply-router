@@ -55,10 +55,10 @@
     "jessica.martin@getclearfacilityservices.com",
     "sarah.jones@mnclearfacility.com",
     "mike.brooks@mnclearfacility.com",
-    "jessica.martin@mnclearfacility.com"
-  ],
-  "_pending_domains": [
-    "TBD_5th_CFS_domain_in_flight_as_of_2026-05-15_add_3_inboxes_when_purchased"
+    "jessica.martin@mnclearfacility.com",
+    "sarah.jones@discoverclearfacility.com",
+    "mike.brooks@discoverclearfacility.com",
+    "jessica.martin@discoverclearfacility.com"
   ],
   "_sending_inboxes_doc": "SINGLE SOURCE OF TRUTH for loop prevention. Update BEFORE connecting any new inbox to Smartlead. See docs/superpowers/specs/2026-05-15-reply-router-design.md \u00a79.1.",
   "monitoring_until": "2026-06-30",

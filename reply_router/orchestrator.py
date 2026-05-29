@@ -80,12 +80,21 @@ def _handle_out_of_office(
     client_config,
     fids: dict,
 ) -> ProcessResult:
-    """OOO carve-out: tag the contact, leave them in Outreach, and ASK SMARTLEAD
-    TO RESUME the sequence (Smartlead's stop_lead_settings=REPLY_TO_AN_EMAIL
-    auto-stops on any reply including OOO).
+    """OOO carve-out: tag the contact + leave the Smartlead sequence paused.
 
-    No AI reply, no Slack notify, no pipeline stage move. The prospect is
-    just on vacation; we want touches 2-4 to keep firing on schedule.
+    We previously auto-resumed the Smartlead lead so touches 2-4 would keep
+    firing on schedule, but Smartlead's resume_lead empirically fires the
+    NEXT touch immediately — bypassing the +N day sequence delay (observed
+    2026-05-29 with Danielle Bader: Touch 2 fired within minutes of resume,
+    not in 3 days). That's actively harmful: spamming someone who's on
+    vacation. So we deliberately leave the lead paused (Smartlead's
+    auto-stop stays in effect) and surface the OOO via a contact tag +
+    audit note for manual triage. JT can resume manually in the Smartlead
+    UI after the prospect's OOO period ends, but that resume will trigger
+    an immediate next touch too — so the better play is usually to leave
+    paused and re-add the lead as fresh after the OOO window.
+
+    No AI reply, no Slack notify, no pipeline stage move.
     """
     logger.warning(
         "OOO detected — applying carve-out (contact=%s campaign=%s)",
@@ -105,33 +114,14 @@ def _handle_out_of_office(
     try:
         ghl.add_note(
             contact["id"],
-            f"Out-of-office auto-reply detected. Smartlead sequence will be "
-            f"resumed so touches 2-4 continue on schedule.\n\n"
+            f"Out-of-office auto-reply detected. Smartlead sequence is "
+            f"paused (auto-stop). Resume manually after the OOO window if "
+            f"useful — but note Smartlead's resume fires the next touch "
+            f"immediately, so re-adding as a fresh lead is usually cleaner.\n\n"
             f"Reply:\n{payload.reply_text}",
         )
     except Exception as exc:
         logger.error("OOO: add_note failed (continuing): %s", exc)
-
-    # Reverse Smartlead's auto-stop so future touches keep firing. The
-    # defensive pause_lead at the end of the normal flow is also skipped
-    # for OOO (see classification carve-out below).
-    smartlead_api_key = os.environ.get(client_config.smartlead.api_key_env, "")
-    if smartlead_api_key and payload.campaign_id:
-        try:
-            sl = SmartleadClient(api_key=smartlead_api_key)
-            sl_lead = sl.find_lead_by_email(payload.lead_email)
-            if sl_lead and sl_lead.get("id"):
-                sl.resume_lead(payload.campaign_id, str(sl_lead["id"]))
-                logger.warning(
-                    "OOO: resumed Smartlead lead=%s campaign=%s",
-                    sl_lead["id"], payload.campaign_id,
-                )
-        except SmartleadError as exc:
-            logger.error(
-                "OOO: resume_lead failed (sequence may stay paused): %s "
-                "campaign=%s lead=%s",
-                exc, payload.campaign_id, payload.lead_email,
-            )
 
     # Mark dedupe complete so a re-fired identical OOO doesn't re-process.
     mark_complete(

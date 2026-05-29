@@ -44,6 +44,12 @@ def _template_prompt(classification: str, account: dict, business_context: Busin
         f"Write a 1-2 sentence opening for a cold-reply response.\n"
         f"Contact: {account.get('contact_name', 'there')} at {account.get('company_name', 'their company')}\n"
         f"Their reply context: {classification}\n"
+        # AI-tell guardrail: em dashes are the #1 giveaway that an AI wrote the
+        # text. Forbid them (and en dashes) explicitly. Use periods, commas, or
+        # hyphens for punctuation breaks.
+        f"STYLE: Do NOT use em dashes (—) or en dashes (–) anywhere. Use a period, "
+        f"comma, hyphen (-), or parentheses instead. Avoid other AI tells like "
+        f"'I hope this email finds you well' or 'delve into'.\n"
     )
     if classification == "interested":
         return base + (
@@ -225,6 +231,12 @@ TONE GUIDANCE:
 - Be helpful and informative, not evasive.
 - Professional but not stiff, transparent, client-focused.
 - Sound human, not like a bot.
+- NEVER use em dashes (—) or en dashes (–) anywhere in the response. Use a
+  period, comma, hyphen (-), or parentheses instead. Em dashes are a strong
+  AI tell and immediately make the email read as machine-generated.
+- Avoid other AI tells too: "I hope this email finds you well," "delve into,"
+  "tapestry," "navigate the landscape," "treasure trove," "let's unpack,"
+  excessive use of "furthermore"/"moreover"/"additionally."
 
 Return ONLY the email response text. No subject line, no JSON wrapping."""
 
